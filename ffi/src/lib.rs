@@ -16,6 +16,53 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
+// The Go exports synchronously copy input strings with C.GoString. They neither
+// mutate nor retain the caller's C buffers. Keep Rust ownership across the call.
+// Returned strings/structs are allocated with C.CString/C.malloc and must instead
+// be released with C free, never CString::from_raw.
+struct OwnedCProof(*mut bindings::Groth16ProofWithVK);
+
+impl Drop for OwnedCProof {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                libc::free((*self.0).proof.cast());
+                libc::free((*self.0).vk.cast());
+                libc::free(self.0.cast());
+            }
+        }
+    }
+}
+
+impl OwnedCProof {
+    unsafe fn into_strings(self) -> (String, String) {
+        assert!(!self.0.is_null(), "Go returned a null proof container");
+        let proof = (*self.0).proof;
+        let vk = (*self.0).vk;
+        assert!(!proof.is_null() && !vk.is_null(), "Go returned a null proof string");
+        (
+            CStr::from_ptr(proof).to_string_lossy().into_owned(),
+            CStr::from_ptr(vk).to_string_lossy().into_owned(),
+        )
+        // Drop also releases both buffers when conversion unwinds.
+    }
+}
+
+struct OwnedCString(*mut std::os::raw::c_char);
+
+impl Drop for OwnedCString {
+    fn drop(&mut self) {
+        unsafe { libc::free(self.0.cast()) }
+    }
+}
+
+impl OwnedCString {
+    unsafe fn into_string(self) -> String {
+        assert!(!self.0.is_null(), "Go returned a null string");
+        CStr::from_ptr(self.0).to_string_lossy().into_owned()
+    }
+}
+
 pub fn generate_groth16_proof(
     common_circuit_data: &str,
     proof_with_public_inputs: &str,
@@ -28,15 +75,12 @@ pub fn generate_groth16_proof(
     let c_keystore_path = CString::new(keystore_path).unwrap();
     unsafe {
         let c_proof_with_vk = bindings::GenerateGroth16Proof(
-            c_common_circuit_data.into_raw(),
-            c_proof_with_public_inputs.into_raw(),
-            c_verifier_only_circuit_data.into_raw(),
-            c_keystore_path.into_raw(),
+            c_common_circuit_data.as_ptr().cast_mut(),
+            c_proof_with_public_inputs.as_ptr().cast_mut(),
+            c_verifier_only_circuit_data.as_ptr().cast_mut(),
+            c_keystore_path.as_ptr().cast_mut(),
         );
-        let proof = CStr::from_ptr((*c_proof_with_vk).proof).to_string_lossy().into_owned();
-        let vk = CStr::from_ptr((*c_proof_with_vk).vk).to_string_lossy().into_owned();
-        libc::free(c_proof_with_vk as *mut libc::c_void);
-        (proof, vk)
+        OwnedCProof(c_proof_with_vk).into_strings()
     }
 }
 
@@ -54,15 +98,12 @@ pub fn generate_groth16_proof_from_json(
     let c_keystore = CString::new(keystore_path).unwrap();
     unsafe {
         let c_proof_with_vk = bindings::GenerateGroth16ProofFromJson(
-            c_common.into_raw(),
-            c_proof.into_raw(),
-            c_verifier.into_raw(),
-            c_keystore.into_raw(),
+            c_common.as_ptr().cast_mut(),
+            c_proof.as_ptr().cast_mut(),
+            c_verifier.as_ptr().cast_mut(),
+            c_keystore.as_ptr().cast_mut(),
         );
-        let proof = CStr::from_ptr((*c_proof_with_vk).proof).to_string_lossy().into_owned();
-        let vk = CStr::from_ptr((*c_proof_with_vk).vk).to_string_lossy().into_owned();
-        libc::free(c_proof_with_vk as *mut libc::c_void);
-        (proof, vk)
+        OwnedCProof(c_proof_with_vk).into_strings()
     }
 }
 
@@ -74,28 +115,25 @@ pub fn verify_groth16_proof(
     let c_vk_string = CString::new(vk_string).unwrap();
     unsafe {
         let result = bindings::VerifyGroth16Proof(
-            c_proof_string.into_raw(),
-            c_vk_string.into_raw(),
+            c_proof_string.as_ptr().cast_mut(),
+            c_vk_string.as_ptr().cast_mut(),
         );
-        let result = CStr::from_ptr(result).to_string_lossy().into_owned();
-        result
+        OwnedCString(result).into_string()
     }
 }
 
 pub fn initialize(key_path: &str) {
     let c_key_path_string = CString::new(key_path).unwrap();
     unsafe {
-        bindings::Initialize(c_key_path_string.into_raw());
+        bindings::Initialize(c_key_path_string.as_ptr().cast_mut());
     }
 }
 
 pub fn export_solidity_verifier(keystore_path: &str) -> String {
     let c_keystore_path = CString::new(keystore_path).unwrap();
     unsafe {
-        let c_result = bindings::ExportSolidityVerifier(c_keystore_path.into_raw());
-        let result = CStr::from_ptr(c_result).to_string_lossy().into_owned();
-        libc::free(c_result as *mut libc::c_void);
-        result
+        let c_result = bindings::ExportSolidityVerifier(c_keystore_path.as_ptr().cast_mut());
+        OwnedCString(c_result).into_string()
     }
 }
 
