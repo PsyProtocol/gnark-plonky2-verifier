@@ -178,13 +178,13 @@ func (c *VerifierChip) Verify(
 	publicInputs []gl.Variable,
 	verifierData variables.VerifierOnlyCircuitData,
 ) {
-	// c.rangeCheckProof(proof)
+	c.rangeCheckProof(proof)
 
 	// Generate the parts of the witness that is for the plonky2 proof input
 	publicInputsHash := c.GetPublicInputsHash(publicInputs)
 	proofChallenges := c.GetChallenges(proof, publicInputsHash, verifierData)
 
-	// c.plonkChip.Verify(proofChallenges, proof.Openings, publicInputsHash)
+	c.plonkChip.Verify(proofChallenges, proof.Openings, publicInputsHash)
 
 	initialMerkleCaps := []variables.FriMerkleCap{
 		verifierData.ConstantSigmasCap,
