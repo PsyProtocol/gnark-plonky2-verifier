@@ -3,6 +3,13 @@ package main
 /*
 #include <stdlib.h> // Include C standard library, if necessary
 #include <string.h>
+#include <stdint.h>
+typedef struct {
+    uint32_t status;
+    char* proof_json;
+    char* verifier_json;
+    char* error_message;
+} Groth16DigestBitsResult;
 typedef struct {
     char* proof;
     char* vk;
@@ -11,8 +18,10 @@ typedef struct {
 import "C"
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
+	"unsafe"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	gnarkgroth16 "github.com/zilong-dai/gnark/backend/groth16"
@@ -30,6 +39,109 @@ func newGroth16ProofWithVK(proof string, vk string) *C.Groth16ProofWithVK {
 	cProofWithVk.proof = C.CString(proof)
 	cProofWithVk.vk = C.CString(vk)
 	return cProofWithVk
+}
+
+func newGroth16DigestBitsResult(status uint32, proof, verifier, message string) *C.Groth16DigestBitsResult {
+	result := (*C.Groth16DigestBitsResult)(C.calloc(1, C.sizeof_Groth16DigestBitsResult))
+	if result == nil {
+		return nil
+	}
+	result.status = C.uint32_t(status)
+	result.proof_json = C.CString(proof)
+	result.verifier_json = C.CString(verifier)
+	result.error_message = C.CString(message)
+	return result
+}
+
+func digestBitsResult(operation func() (string, string, error)) (result *C.Groth16DigestBitsResult) {
+	completed := false
+	defer func() {
+		recover()
+		if !completed {
+			result = newGroth16DigestBitsResult(5, "", "", "native DigestBits operation panicked")
+		}
+	}()
+	proof, verifier, err := operation()
+	if err != nil {
+		status := uint32(5)
+		var typed *worker.DigestBitsError
+		if errors.As(err, &typed) && typed != nil && typed.Status >= 1 && typed.Status <= 5 {
+			status = typed.Status
+		}
+		message := err.Error()
+		if message == "" {
+			message = "native DigestBits operation failed"
+		}
+		result = newGroth16DigestBitsResult(status, "", "", message)
+		completed = true
+		return result
+	}
+	result = newGroth16DigestBitsResult(0, proof, verifier, "")
+	completed = true
+	return result
+}
+
+//export GenerateGroth16DigestBitsProof
+func GenerateGroth16DigestBitsProof(artifact C.uint32_t, identityJSON, proofJSON, artifactDir *C.char) *C.Groth16DigestBitsResult {
+	return digestBitsResult(func() (string, string, error) {
+		if identityJSON == nil || proofJSON == nil || artifactDir == nil {
+			return "", "", &worker.DigestBitsError{Status: 1, Message: "null DigestBits request string"}
+		}
+		return worker.GenerateDigestBitsProof(uint32(artifact), C.GoString(identityJSON), C.GoString(proofJSON), C.GoString(artifactDir))
+	})
+}
+
+//export SetupGroth16DigestBits
+func SetupGroth16DigestBits(artifact C.uint32_t, identityJSON, artifactDir *C.char) *C.Groth16DigestBitsResult {
+	return digestBitsResult(func() (string, string, error) {
+		if identityJSON == nil || artifactDir == nil {
+			return "", "", &worker.DigestBitsError{Status: 1, Message: "null DigestBits request string"}
+		}
+		return "", "", worker.SetupDigestBits(uint32(artifact), C.GoString(identityJSON), C.GoString(artifactDir))
+	})
+}
+
+//export GenerateGroth16FinalizeProof
+func GenerateGroth16FinalizeProof(identityJSON, proofJSON, artifactDir *C.char) *C.Groth16DigestBitsResult {
+	return digestBitsResult(func() (string, string, error) {
+		if identityJSON == nil || proofJSON == nil || artifactDir == nil { return "", "", &worker.DigestBitsError{Status: 1, Message: "null finalize request"} }
+		return worker.GenerateFinalizeProof(C.GoString(identityJSON), C.GoString(proofJSON), C.GoString(artifactDir))
+	})
+}
+
+//export SetupGroth16Finalize
+func SetupGroth16Finalize(identityJSON, artifactDir *C.char) *C.Groth16DigestBitsResult {
+	return digestBitsResult(func() (string, string, error) {
+		if identityJSON == nil || artifactDir == nil { return "", "", &worker.DigestBitsError{Status: 1, Message: "null finalize request"} }
+		return "", "", worker.SetupFinalize(C.GoString(identityJSON), C.GoString(artifactDir))
+	})
+}
+
+//export ExportFinalizeVerifier
+func ExportFinalizeVerifier(artifactDir *C.char) *C.char {
+	if artifactDir == nil { return C.CString("error: null finalize directory") }
+	code, err := worker.ExportFinalizeVerifier(C.GoString(artifactDir))
+	if err != nil { return C.CString(fmt.Sprintf("error: %v", err)) }
+	return C.CString(code)
+}
+
+//export ReadFinalizeSetupIdentity
+func ReadFinalizeSetupIdentity(artifactDir *C.char) *C.char {
+	if artifactDir == nil { return C.CString("error: null finalize directory") }
+	identity, err := worker.ReadFinalizeSetupIdentity(C.GoString(artifactDir))
+	if err != nil { return C.CString(fmt.Sprintf("error: %v", err)) }
+	return C.CString(identity)
+}
+
+//export FreeGroth16DigestBitsResult
+func FreeGroth16DigestBitsResult(result *C.Groth16DigestBitsResult) {
+	if result == nil {
+		return
+	}
+	C.free(unsafe.Pointer(result.proof_json))
+	C.free(unsafe.Pointer(result.verifier_json))
+	C.free(unsafe.Pointer(result.error_message))
+	C.free(unsafe.Pointer(result))
 }
 
 //export GenerateGroth16Proof

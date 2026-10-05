@@ -9,6 +9,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/zilong-dai/gnark/backend"
 	"github.com/zilong-dai/gnark/frontend"
+	"github.com/zilong-dai/gnark/frontend/cs/r1cs"
 	"github.com/zilong-dai/gnark/frontend/cs/scs"
 	"github.com/zilong-dai/gnark/profile"
 	"github.com/zilong-dai/gnark/test"
@@ -41,6 +42,49 @@ func TestGoldilocksRangeCheck(t *testing.T) {
 	maxValidVal := new(big.Int).Sub(MODULUS, one)
 	witness.X = maxValidVal
 	assert.ProverSucceeded(&circuit, &witness, test.WithCurves(ecc.BN254), test.WithBackends(backend.GROTH16))
+}
+
+type TestGoldilocksNativeRangeCheckCircuit struct {
+	X frontend.Variable
+	Y frontend.Variable `gnark:",public"`
+}
+
+func (c *TestGoldilocksNativeRangeCheckCircuit) Define(api frontend.API) error {
+	glApi := New(api)
+	if glApi.rangeCheckerType != NATIVE_RANGE_CHECKER {
+		return fmt.Errorf("expected native range checker, got %v", glApi.rangeCheckerType)
+	}
+	api.AssertIsEqual(c.X, c.Y)
+	glApi.RangeCheckWithMaxBits(NewVariable(c.X), 32)
+	return nil
+}
+
+func TestGoldilocksNativeRangeCheck(t *testing.T) {
+	t.Setenv("USE_BIT_DECOMPOSITION_RANGE_CHECK", "false")
+
+	var circuit TestGoldilocksNativeRangeCheckCircuit
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &circuit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	validAssignment := TestGoldilocksNativeRangeCheckCircuit{X: uint64(1<<32 - 1), Y: uint64(1<<32 - 1)}
+	validWitness, err := frontend.NewWitness(&validAssignment, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ccs.IsSolved(validWitness); err != nil {
+		t.Fatalf("maximum 32-bit value rejected: %v", err)
+	}
+
+	invalidAssignment := TestGoldilocksNativeRangeCheckCircuit{X: uint64(1 << 32), Y: uint64(1 << 32)}
+	invalidWitness, err := frontend.NewWitness(&invalidAssignment, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ccs.IsSolved(invalidWitness); err == nil {
+		t.Fatal("out-of-range 32-bit value accepted")
+	}
 }
 
 type TestGoldilocksRangeCheckBenchmarkCircuit struct {

@@ -16,6 +16,157 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum DigestArtifact {
+    DepositAggregate = 1,
+    WithdrawalBatch = 2,
+    RewardBatch = 3,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct DigestBitsProof {
+    pub proof_json: String,
+    pub verifier_json: String,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct DigestBitsError {
+    pub status: u32,
+    pub message: String,
+}
+
+impl std::fmt::Display for DigestBitsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DigestBits status {}: {}", self.status, self.message)
+    }
+}
+
+impl std::error::Error for DigestBitsError {}
+
+struct DigestBitsResult(*mut bindings::Groth16DigestBitsResult);
+
+impl Drop for DigestBitsResult {
+    fn drop(&mut self) {
+        unsafe { bindings::FreeGroth16DigestBitsResult(self.0) }
+    }
+}
+
+fn digest_bits_string(value: &str) -> Result<CString, DigestBitsError> {
+    CString::new(value).map_err(|_| DigestBitsError {
+        status: 1,
+        message: "DigestBits request contains an interior NUL".into(),
+    })
+}
+
+impl DigestBitsResult {
+    fn into_proof(self, setup: bool) -> Result<DigestBitsProof, DigestBitsError> {
+        let invalid = |message: &str| DigestBitsError { status: 5, message: message.into() };
+        let result = unsafe { self.0.as_ref() }
+            .ok_or_else(|| invalid("native DigestBits returned a null result"))?;
+        let read = |value: *const libc::c_char| -> Result<String, DigestBitsError> {
+            if value.is_null() {
+                return Err(invalid("native DigestBits returned a null string"));
+            }
+            unsafe { CStr::from_ptr(value) }.to_str()
+                .map(str::to_owned)
+                .map_err(|_| invalid("native DigestBits returned invalid UTF-8"))
+        };
+        let proof_json = read(result.proof_json)?;
+        let verifier_json = read(result.verifier_json)?;
+        let message = read(result.error_message)?;
+        match result.status {
+            0 if message.is_empty()
+                && if setup { proof_json.is_empty() && verifier_json.is_empty() }
+                   else { !proof_json.is_empty() && !verifier_json.is_empty() } =>
+            {
+                Ok(DigestBitsProof { proof_json, verifier_json })
+            }
+            1..=5 if proof_json.is_empty() && verifier_json.is_empty() && !message.is_empty() => {
+                Err(DigestBitsError { status: result.status, message })
+            }
+            _ => Err(invalid("native DigestBits returned an inconsistent result")),
+        }
+    }
+}
+
+pub fn generate_digest_bits_proof(
+    artifact: DigestArtifact,
+    identity_json: &str,
+    proof_json: &str,
+    artifact_dir: &str,
+) -> Result<DigestBitsProof, DigestBitsError> {
+    let identity = digest_bits_string(identity_json)?;
+    let proof = digest_bits_string(proof_json)?;
+    let directory = digest_bits_string(artifact_dir)?;
+    let result = unsafe {
+        bindings::GenerateGroth16DigestBitsProof(
+            artifact as u32,
+            identity.as_ptr() as *mut _,
+            proof.as_ptr() as *mut _,
+            directory.as_ptr() as *mut _,
+        )
+    };
+    DigestBitsResult(result).into_proof(false)
+}
+
+pub fn setup_digest_bits(
+    artifact: DigestArtifact,
+    identity_json: &str,
+    artifact_dir: &str,
+) -> Result<(), DigestBitsError> {
+    let identity = digest_bits_string(identity_json)?;
+    let directory = digest_bits_string(artifact_dir)?;
+    let result = unsafe {
+        bindings::SetupGroth16DigestBits(
+            artifact as u32,
+            identity.as_ptr() as *mut _,
+            directory.as_ptr() as *mut _,
+        )
+    };
+    DigestBitsResult(result).into_proof(true).map(|_| ())
+}
+
+pub fn setup_finalize(identity_json: &str, artifact_dir: &str) -> Result<(), DigestBitsError> {
+    let identity = digest_bits_string(identity_json)?;
+    let directory = digest_bits_string(artifact_dir)?;
+    let result = unsafe { bindings::SetupGroth16Finalize(identity.as_ptr() as *mut _, directory.as_ptr() as *mut _) };
+    DigestBitsResult(result).into_proof(true).map(|_| ())
+}
+
+pub fn generate_finalize_proof(identity_json: &str, proof_json: &str, artifact_dir: &str) -> Result<DigestBitsProof, DigestBitsError> {
+    let identity = digest_bits_string(identity_json)?;
+    let proof = digest_bits_string(proof_json)?;
+    let directory = digest_bits_string(artifact_dir)?;
+    let result = unsafe { bindings::GenerateGroth16FinalizeProof(identity.as_ptr() as *mut _, proof.as_ptr() as *mut _, directory.as_ptr() as *mut _) };
+    DigestBitsResult(result).into_proof(false)
+}
+
+pub fn export_finalize_verifier(artifact_dir: &str) -> Result<String, DigestBitsError> {
+    let directory = digest_bits_string(artifact_dir)?;
+    let result = unsafe { bindings::ExportFinalizeVerifier(directory.as_ptr() as *mut _) };
+    if result.is_null() { return Err(DigestBitsError { status: 5, message: "null finalize export".into() }); }
+    let text = unsafe { CStr::from_ptr(result) }.to_str().map(str::to_owned);
+    unsafe { libc::free(result.cast()); }
+    let text = text.map_err(|_| DigestBitsError { status: 5, message: "invalid finalize export UTF-8".into() })?;
+    if text.starts_with("error:") { return Err(DigestBitsError { status: 4, message: text }); }
+    Ok(text)
+}
+
+pub fn read_finalize_setup_identity(artifact_dir: &str) -> Result<String, DigestBitsError> {
+    let directory = digest_bits_string(artifact_dir)?;
+    let result = unsafe { bindings::ReadFinalizeSetupIdentity(directory.as_ptr() as *mut _) };
+    if result.is_null() { return Err(DigestBitsError { status: 5, message: "null finalize identity".into() }); }
+    let text = unsafe { CStr::from_ptr(result) }.to_str().map(str::to_owned);
+    unsafe { libc::free(result.cast()); }
+    let text = text.map_err(|_| DigestBitsError { status: 5, message: "invalid finalize identity UTF-8".into() })?;
+    if text.starts_with("error:") { return Err(DigestBitsError { status: 4, message: text }); }
+    Ok(text)
+}
+
+#[cfg(test)]
+mod digest_bits_tests;
+
 pub fn generate_groth16_proof(
     common_circuit_data: &str,
     proof_with_public_inputs: &str,
