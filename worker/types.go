@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -59,13 +60,25 @@ func (p G16ProofWithPublicInputs) MarshalJSON() ([]byte, error) {
 	pi_a_arr := Chunk(hex.EncodeToString((&proof.Ar).Marshal()), 2)
 	pi_b_arr := Chunk(hex.EncodeToString((&proof.Bs).Marshal()), 4)
 	pi_c_arr := Chunk(hex.EncodeToString((&proof.Krs).Marshal()), 2)
-
 	var buffer bytes.Buffer
-	_, err := p.PublicInputs.WriteTo(&buffer)
+	n, err := p.PublicInputs.WriteTo(&buffer)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	public_inputs_arr := hex.EncodeToString(buffer.Bytes())[24:]
+	raw := buffer.Bytes()
+	if int64(len(raw)) != n || len(raw) < 12 {
+		return nil, fmt.Errorf("incomplete public witness")
+	}
+	publicCount := binary.BigEndian.Uint32(raw[0:4])
+	secretCount := binary.BigEndian.Uint32(raw[4:8])
+	vectorCount := binary.BigEndian.Uint32(raw[8:12])
+	if publicCount != 2 && publicCount != 6 || secretCount != 0 || vectorCount != publicCount || len(raw) != 12+32*int(publicCount) {
+		return nil, fmt.Errorf("public witness count must be 2 or 6")
+	}
+	words := make([]string, publicCount)
+	for i := range words {
+		words[i] = hex.EncodeToString(raw[12+32*i : 12+32*(i+1)])
+	}
 
 	proof_map := map[string]interface{}{
 		"pi_a":          [2]string{pi_a_arr[0], pi_a_arr[1]},
@@ -73,11 +86,11 @@ func (p G16ProofWithPublicInputs) MarshalJSON() ([]byte, error) {
 		"pi_c":          [2]string{pi_c_arr[0], pi_c_arr[1]},
 		"Commitments":   hex.EncodeToString(writer.Bytes()),
 		"CommitmentPok": hex.EncodeToString((&proof.CommitmentPok).Marshal()),
-		"public_inputs": [2]string{public_inputs_arr[0:64], public_inputs_arr[64:128]},
+		"public_inputs": words,
 	}
 	return json.Marshal(proof_map)
-
 }
+
 
 func NewG16ProofWithPublicInputs() *G16ProofWithPublicInputs {
 
@@ -194,7 +207,7 @@ func (p *G16ProofWithPublicInputs) UnmarshalJSON(data []byte) error {
 		PiC           [2]string    `json:"pi_c"`
 		Commitments   string       `json:"Commitments"`
 		CommitmentPok string       `json:"CommitmentPok"`
-		PublicInputs  [2]string    `json:"public_inputs"`
+		PublicInputs  []string     `json:"public_inputs"`
 	}
 
 	err := json.Unmarshal(data, &ProofString)
@@ -233,9 +246,9 @@ func (p *G16ProofWithPublicInputs) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
-	len := len(com_bytes) / 64
-	proof.Commitments = make([]curve.G1Affine, len)
-	for i := 0; i < len; i++ {
+	commitmentCount := len(com_bytes) / 64
+	proof.Commitments = make([]curve.G1Affine, commitmentCount)
+	for i := 0; i < commitmentCount; i++ {
 		err = proof.Commitments[i].Unmarshal(com_bytes[64*i : 64*(i+1)])
 		if err != nil {
 			return err
@@ -251,17 +264,27 @@ func (p *G16ProofWithPublicInputs) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// public inputs num 2, witness inputs num 0, vector length 2
-	publicinputs_bytes, err := hex.DecodeString("000000020000000000000002" + ProofString.PublicInputs[0] + ProofString.PublicInputs[1])
-
-	if err != nil {
-		return err
+	if len(ProofString.PublicInputs) != 2 && len(ProofString.PublicInputs) != 6 {
+		return fmt.Errorf("public input count must be 2 or 6")
+	}
+	var witnessHeader [12]byte
+	count := uint32(len(ProofString.PublicInputs))
+	binary.BigEndian.PutUint32(witnessHeader[0:4], count)
+	binary.BigEndian.PutUint32(witnessHeader[8:12], count)
+	publicinputs := make([]byte, 0, len(witnessHeader)+32*len(ProofString.PublicInputs))
+	publicinputs = append(publicinputs, witnessHeader[:]...)
+	for _, word := range ProofString.PublicInputs {
+		decoded, err := hex.DecodeString(word)
+		if err != nil || word != hex.EncodeToString(decoded) || len(decoded) != 32 {
+			return fmt.Errorf("public input must be 64 lowercase hexadecimal digits")
+		}
+		publicinputs = append(publicinputs, decoded...)
 	}
 
-	reader := bytes.NewReader(publicinputs_bytes)
-
-	if _, err = p.PublicInputs.ReadFrom(reader); err != nil {
-		return err
+	reader := bytes.NewReader(publicinputs)
+	read, err := p.PublicInputs.ReadFrom(reader)
+	if err != nil || read != int64(len(publicinputs)) || reader.Len() != 0 {
+		return fmt.Errorf("invalid public witness")
 	}
 
 	return nil

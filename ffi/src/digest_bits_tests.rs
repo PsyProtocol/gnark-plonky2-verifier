@@ -65,7 +65,7 @@ fn rejects_broken_native_result_contract() {
 
 #[test]
 fn rejects_nul_in_each_borrowed_input() {
-    for artifact in [DigestArtifact::DepositAggregate, DigestArtifact::WithdrawalBatch, DigestArtifact::RewardBatch] {
+    for artifact in [DigestArtifact::DepositAggregate, DigestArtifact::SettlementAggregate] {
         for (identity, proof, directory) in [
             ("\0", "{}", "unused"), ("{}", "\0", "unused"), ("{}", "{}", "\0"),
         ] {
@@ -78,7 +78,7 @@ fn rejects_nul_in_each_borrowed_input() {
 
 #[test]
 fn native_exports_return_typed_validation_failures() {
-    for artifact in [DigestArtifact::DepositAggregate, DigestArtifact::WithdrawalBatch, DigestArtifact::RewardBatch] {
+    for artifact in [DigestArtifact::DepositAggregate, DigestArtifact::SettlementAggregate] {
         for (identity, status) in [("{", 1), ("{}", 2)] {
             assert_eq!(generate_digest_bits_proof(artifact, identity, "{}", "unused").unwrap_err().status, status);
             assert_eq!(setup_digest_bits(artifact, identity, "unused").unwrap_err().status, status);

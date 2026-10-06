@@ -20,8 +20,7 @@ mod bindings {
 #[repr(u32)]
 pub enum DigestArtifact {
     DepositAggregate = 1,
-    WithdrawalBatch = 2,
-    RewardBatch = 3,
+    SettlementAggregate = 2,
 }
 
 #[derive(Debug, Eq, PartialEq)]

@@ -490,13 +490,24 @@ type DigestBitsCircuit struct {
 	Verifier variables.VerifierOnlyCircuitData `gnark:"-"`
 }
 
-func constrainDigestBits(api frontend.API, public []frontend.Variable, bits []gl.Variable) error {
-	if len(public) != 2 || len(bits) != 256 {
-		return fmt.Errorf("DigestBits requires two public inputs and 256 bits")
+func digestBitsWidth(artifact uint32) (int, error) {
+	switch artifact {
+	case 1:
+		return 256, nil
+	case 2, 3:
+		return 768, nil
+	default:
+		return 0, fmt.Errorf("unsupported DigestBits artifact")
 	}
-	for half := 0; half < 2; half++ {
+}
+
+func constrainDigestBits(api frontend.API, public []frontend.Variable, bits []gl.Variable) error {
+	if len(bits) == 0 || len(bits)%128 != 0 || len(public) != len(bits)/128 {
+		return fmt.Errorf("DigestBits public input width mismatch")
+	}
+	for half := 0; half < len(public); half++ {
 		var acc frontend.Variable = 0
-		for _, bit := range bits[half*128:(half+1)*128] {
+		for _, bit := range bits[half*128 : (half+1)*128] {
 			api.AssertIsBoolean(bit.Limb)
 			acc = api.Add(api.Mul(acc, 2), bit.Limb)
 		}
@@ -506,21 +517,31 @@ func constrainDigestBits(api frontend.API, public []frontend.Variable, bits []gl
 }
 
 func (c *DigestBitsCircuit) Define(api frontend.API) error {
-	if c.Common.NumPublicInputs != 256 { return fmt.Errorf("final common input count is not 256") }
-	if err := constrainDigestBits(api, c.PublicInputs, c.OriginalPublicInputs); err != nil { return err }
+	if int(c.Common.NumPublicInputs) != len(c.OriginalPublicInputs) || len(c.PublicInputs)*128 != len(c.OriginalPublicInputs) {
+		return fmt.Errorf("final common input count does not match digest width")
+	}
+	if err := constrainDigestBits(api, c.PublicInputs, c.OriginalPublicInputs); err != nil {
+		return err
+	}
 	verifier.NewVerifierChip(api, c.Common).Verify(c.Proof, c.OriginalPublicInputs, c.Verifier)
 	return nil
 }
 
-func digestBitsHalves(bits []uint64) ([2]*big.Int, error) {
-	var result [2]*big.Int
-	if len(bits) != 256 { return result, fmt.Errorf("expected exactly 256 digest bits") }
+func digestBitsHalves(bits []uint64) ([]*big.Int, error) {
+	if len(bits) != 256 && len(bits) != 768 {
+		return nil, fmt.Errorf("expected 256 or 768 digest bits")
+	}
+	result := make([]*big.Int, len(bits)/128)
 	for half := range result {
 		result[half] = new(big.Int)
-		for _, bit := range bits[half*128:(half+1)*128] {
-			if bit > 1 { return result, fmt.Errorf("digest input is not Boolean") }
+		for _, bit := range bits[half*128 : (half+1)*128] {
+			if bit > 1 {
+				return nil, fmt.Errorf("digest input is not Boolean")
+			}
 			result[half].Lsh(result[half], 1)
-			if bit == 1 { result[half].SetBit(result[half], 0, 1) }
+			if bit == 1 {
+				result[half].SetBit(result[half], 0, 1)
+			}
 		}
 	}
 	return result, nil
@@ -592,7 +613,10 @@ func readDigestIdentity(artifact uint32, data string) (*DigestBitsIdentity, stri
 	var rawVerifier types.VerifierOnlyCircuitDataRaw
 	if err := decodeDigestJSON([]byte(identity.FinalCommonJSON), &rawCommon); err != nil { return nil, "", &DigestBitsError{1, err.Error()} }
 	if err := decodeDigestJSON([]byte(identity.FinalVerifierJSON), &rawVerifier); err != nil { return nil, "", &DigestBitsError{1, err.Error()} }
-	if rawCommon.NumPublicInputs != 256 { return nil, "", &DigestBitsError{2, "final common input count must be 256"} }
+	width, widthErr := digestBitsWidth(artifact)
+	if widthErr != nil || int(rawCommon.NumPublicInputs) != width {
+		return nil, "", &DigestBitsError{2, "final common input count does not match artifact"}
+	}
 	if rawCommon.FriParams.Hiding || rawCommon.Config.ZeroKnowledge { return nil, "", &DigestBitsError{2, "hiding is not supported"} }
 	if rawCommon.FriParams.Config.CapHeight > 20 || len(rawVerifier.ConstantsSigmasCap) != 1<<rawCommon.FriParams.Config.CapHeight {
 		return nil, "", &DigestBitsError{2, "final verifier cap shape mismatch"}
@@ -614,10 +638,19 @@ func readDigestIdentity(artifact uint32, data string) (*DigestBitsIdentity, stri
 }
 
 func buildDigestCircuit(identity *DigestBitsIdentity) (*DigestBitsCircuit, error) {
+	width, err := digestBitsWidth(identity.Artifact)
+	if err != nil {
+		return nil, err
+	}
 	c := types.ReadCommonCircuitDataRaw(identity.FinalCommonJSON)
+	if int(c.NumPublicInputs) != width {
+		return nil, fmt.Errorf("final common input count does not match artifact")
+	}
 	proof, err := buildWrapperProof(c)
-	if err != nil { return nil, err }
-	return &DigestBitsCircuit{PublicInputs: make([]frontend.Variable, 2), OriginalPublicInputs: make([]gl.Variable, 256), Proof: proof, Common: c,
+	if err != nil {
+		return nil, err
+	}
+	return &DigestBitsCircuit{PublicInputs: make([]frontend.Variable, width/128), OriginalPublicInputs: make([]gl.Variable, width), Proof: proof, Common: c,
 		Verifier: variables.DeserializeVerifierOnlyCircuitData(types.ReadVerifierOnlyCircuitDataRaw(identity.FinalVerifierJSON))}, nil
 }
 
@@ -807,11 +840,16 @@ func GenerateDigestBitsProof(artifact uint32, identityJSON, proofJSON, artifactD
 	if failure != nil { return "", "", failure }
 	var raw types.ProofWithPublicInputsRaw
 	if err := decodeDigestJSON([]byte(proofJSON), &raw); err != nil { return "", "", &DigestBitsError{1, err.Error()} }
+	width, err := digestBitsWidth(artifact)
+	if err != nil { return "", "", &DigestBitsError{2, err.Error()} }
+	if len(raw.PublicInputs) != width { return "", "", &DigestBitsError{2, "digest proof width mismatch"} }
 	halves, err := digestBitsHalves(raw.PublicInputs)
 	if err != nil { return "", "", &DigestBitsError{2, err.Error()} }
+	if len(halves) != width/128 { return "", "", &DigestBitsError{2, "digest proof width mismatch"} }
 	if err := validateDigestProofValue(reflect.ValueOf(raw.Proof)); err != nil { return "", "", &DigestBitsError{3, err.Error()} }
 	circuit, err := buildDigestCircuit(identity)
 	if err != nil { return "", "", &DigestBitsError{2, err.Error()} }
+	if len(circuit.PublicInputs) != len(halves) || len(circuit.OriginalPublicInputs) != width { return "", "", &DigestBitsError{2, "digest circuit width mismatch"} }
 	proof := variables.DeserializeProofWithPublicInputs(raw)
 	if !sameDigestShape(reflect.ValueOf(circuit.Proof), reflect.ValueOf(proof.Proof)) { return "", "", &DigestBitsError{3, "final proof shape mismatch"} }
 	files, err := readDigestArtifacts(artifactDir, identityHash, artifact)
@@ -830,7 +868,8 @@ func GenerateDigestBitsProof(artifact uint32, identityJSON, proofJSON, artifactD
 	if err := vk.ExportSolidity(&solidity); err != nil || !bytes.Equal(solidity.Bytes(), files["verifier.sol"]) { return "", "", &DigestBitsError{4, "Solidity verifier/key mismatch"} }
 	circuit.Proof = proof.Proof
 	circuit.OriginalPublicInputs = proof.PublicInputs
-	circuit.PublicInputs = []frontend.Variable{halves[0], halves[1]}
+	circuit.PublicInputs = make([]frontend.Variable, len(halves))
+	for i, half := range halves { circuit.PublicInputs[i] = half }
 	wit, err := frontend.NewWitness(circuit, ecc.BN254.ScalarField())
 	if err != nil { return "", "", &DigestBitsError{3, err.Error()} }
 	if err := ccs.IsSolved(wit); err != nil { return "", "", &DigestBitsError{3, err.Error()} }
