@@ -184,7 +184,7 @@ func (c *VerifierChip) Verify(
 	publicInputsHash := c.GetPublicInputsHash(publicInputs)
 	proofChallenges := c.GetChallenges(proof, publicInputsHash, verifierData)
 
-	// c.plonkChip.Verify(proofChallenges, proof.Openings, publicInputsHash)
+	c.plonkChip.Verify(proofChallenges, proof.Openings, publicInputsHash)
 
 	initialMerkleCaps := []variables.FriMerkleCap{
 		verifierData.ConstantSigmasCap,
