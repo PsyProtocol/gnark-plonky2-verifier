@@ -3,6 +3,7 @@ package worker
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -17,14 +18,12 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fp"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/rs/zerolog"
 	"github.com/zilong-dai/gnark/backend/groth16"
 	groth16_bn254 "github.com/zilong-dai/gnark/backend/groth16/bn254"
 	"github.com/zilong-dai/gnark/backend/witness"
 	"github.com/zilong-dai/gnark/constraint"
 	csbls12381 "github.com/zilong-dai/gnark/constraint/bls12-381"
 	csbn254 "github.com/zilong-dai/gnark/constraint/bn254"
-	csolver "github.com/zilong-dai/gnark/constraint/solver"
 	"github.com/zilong-dai/gnark/frontend"
 	"github.com/zilong-dai/gnark/frontend/cs/r1cs"
 	"github.com/zilong-dai/gnark/std/hash/sha3"
@@ -223,19 +222,13 @@ func GenerateProof(common_circuit_data string, proof_with_public_inputs string, 
 	}
 	fmt.Printf("[prove] Setup took %s\n", time.Since(t))
 
-	t = time.Now()
-	if err := debugUnsatisfiedConstraint(*cs, wit); err != nil {
-		panic(err)
-	}
-	fmt.Printf("[prove] debugUnsatisfiedConstraint took %s\n", time.Since(t))
-
 	var proof groth16.Proof
 	var publicWitness witness.Witness
 	var retries = 0
 
 	for {
 		t = time.Now()
-		proof, err = groth16.Prove(*cs, pk, wit)
+		proof, err = proveWithDiagnostics(*cs, pk, wit)
 		if err != nil {
 			panic(err)
 		}
@@ -307,16 +300,20 @@ func GenerateProof(common_circuit_data string, proof_with_public_inputs string, 
 
 }
 
-func debugUnsatisfiedConstraint(ccs constraint.ConstraintSystem, wit witness.Witness) error {
-	logger := zerolog.New(os.Stdout).With().Timestamp().Logger().Level(zerolog.DebugLevel)
-	if err := ccs.IsSolved(wit, csolver.WithLogger(logger)); err != nil {
-		fmt.Printf("IsSolved failed: %v\n", err)
+// Prove already solves and checks the constraints. Diagnose its returned error
+// instead of solving the entire witness a second time before every proof.
+func proveWithDiagnostics(ccs constraint.ConstraintSystem, pk groth16.ProvingKey, wit witness.Witness) (groth16.Proof, error) {
+	proof, err := groth16.Prove(ccs, pk, wit)
+	if err != nil {
+		fmt.Printf("groth16.Prove failed: %v\n", err)
 		cid := -1
-		switch e := err.(type) {
-		case *csbn254.UnsatisfiedConstraintError:
-			cid = e.CID
-		case *csbls12381.UnsatisfiedConstraintError:
-			cid = e.CID
+		var bn254Error *csbn254.UnsatisfiedConstraintError
+		var bls12381Error *csbls12381.UnsatisfiedConstraintError
+		switch {
+		case errors.As(err, &bn254Error):
+			cid = bn254Error.CID
+		case errors.As(err, &bls12381Error):
+			cid = bls12381Error.CID
 		}
 		if cid >= 0 {
 			if r1cs, ok := ccs.(constraint.R1CS); ok {
@@ -335,9 +332,9 @@ func debugUnsatisfiedConstraint(ccs constraint.ConstraintSystem, wit witness.Wit
 				}
 			}
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	return proof, nil
 }
 
 func VerifyProof(proofString string, vkString string) string {
