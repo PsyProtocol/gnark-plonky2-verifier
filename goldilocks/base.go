@@ -410,8 +410,7 @@ func (p *Chip) AssertIsEqual(x, y Variable) {
 
 func (p *Chip) rangeCheckerCheck(x frontend.Variable, nbBits int) {
 	switch p.rangeCheckerType {
-	case NATIVE_RANGE_CHECKER:
-	case BIT_DECOMP_RANGE_CHECKER:
+	case NATIVE_RANGE_CHECKER, BIT_DECOMP_RANGE_CHECKER:
 		p.rangeChecker.Check(x, nbBits)
 	case COMMIT_RANGE_CHECKER:
 		p.collectedMutex.Lock()
