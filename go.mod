@@ -9,7 +9,7 @@ require (
 	github.com/GopherJ/gnark-ignition-verifier v0.0.0-20240415111943-ecb54c32e4bb
 	github.com/consensys/gnark-crypto v0.12.2-0.20240215234832-d72fcb379d3e
 	github.com/rs/zerolog v1.34.0
-	github.com/zilong-dai/gnark v0.0.0-20260327021024-2081880d08df
+	github.com/zilong-dai/gnark v0.0.0-20261112080346-b03a54cecfaf
 	golang.org/x/crypto v0.17.0
 )
 

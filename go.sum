@@ -31,6 +31,10 @@ github.com/leanovate/gopter v0.2.9 h1:fQjYxZaynp97ozCzfOyOuAGOU4aU/z37zf/tOujFk7
 github.com/leanovate/gopter v0.2.9/go.mod h1:U2L/78B+KVFIx2VmW6onHJQzXtFb+p5y3y2Sh+Jxxv8=
 github.com/logere/doge-covenant v0.0.0-20260323110620-462c2b71c176 h1:hEtsNqQmxFAal5bFKvn+s+W5MfDOpSY5pmvE8QBB/QI=
 github.com/logere/doge-covenant v0.0.0-20260323110620-462c2b71c176/go.mod h1:WCSRRrKwtTdcc5HzzVX4lwbHl0RwvOFUz+ddkAblIz4=
+github.com/logere/gnark v0.0.0-20240418110416-c38cdd37b96d h1:GwR6KwsNQwSxG5Xy0KVDkWdU++25ix987EJPGCOj5S8=
+github.com/logere/gnark v0.0.0-20240418110416-c38cdd37b96d/go.mod h1:VJU5JrrhZorbfDH+EUjcuFWr2c5z19tHPh8D6KVQksU=
+github.com/logere/gnark v0.0.0-20261109091518-7437d5636c8e h1:m8CWwMWHpUL6pHCij3rWp8mSUei4FbJ3kDt5fcC1haM=
+github.com/logere/gnark v0.0.0-20261109091518-7437d5636c8e/go.mod h1:e3ol0bHkkaD4yx6LqhblEBTupZgPOegl3kmGS8GHQWE=
 github.com/mattn/go-colorable v0.1.13 h1:fFA4WZxdEF4tXPZVKMLwD8oUnCTTo08duU7wxecdEvA=
 github.com/mattn/go-colorable v0.1.13/go.mod h1:7S9/ev0klgBDR4GtXTXX8a3vIGJpMovkB8vQcUbaXHg=
 github.com/mattn/go-isatty v0.0.16/go.mod h1:kYGgaQfpe5nmfYZH+SKPsOc2e4SrIfOl2e/yFXSvRLM=
@@ -51,8 +55,14 @@ github.com/stretchr/testify v1.8.4 h1:CcVxjf3Q8PM0mHUKJCdn+eZZtm5yQwehR5yeSVQQcU
 github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
 github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=
 github.com/x448/float16 v0.8.4/go.mod h1:14CWIYCyZA/cWjXOioeEpHeN/83MdbZDRQHoFcYsOfg=
+github.com/zilong-dai/gnark v0.0.0-20240517091131-0ad4d7b387da h1:Uwj2VzUBj1rV18VCLr7yH3RRNg0Iz57VatN8frouOb4=
+github.com/zilong-dai/gnark v0.0.0-20240517091131-0ad4d7b387da/go.mod h1:e3ol0bHkkaD4yx6LqhblEBTupZgPOegl3kmGS8GHQWE=
 github.com/zilong-dai/gnark v0.0.0-20260327021024-2081880d08df h1:MsGCS5i7Pb9AgC33I9S5zS97EoRCOFrMJtebE7chbw0=
 github.com/zilong-dai/gnark v0.0.0-20260327021024-2081880d08df/go.mod h1:L9JO9o3fqAgjRjZPCA+r1EnMLEC/Om3O0NC1YTZ63HY=
+github.com/zilong-dai/gnark v0.0.0-20261109091518-7437d5636c8e h1:pqkiPmORcJUTcbDWTls1rOkImz4IeAtMYsxjnq/PMOE=
+github.com/zilong-dai/gnark v0.0.0-20261109091518-7437d5636c8e/go.mod h1:e3ol0bHkkaD4yx6LqhblEBTupZgPOegl3kmGS8GHQWE=
+github.com/zilong-dai/gnark v0.0.0-20261112080346-b03a54cecfaf h1:XAA+1bSdvJ0RQcU0VmiCedcyRKXk+tGKXryCOfZesFY=
+github.com/zilong-dai/gnark v0.0.0-20261112080346-b03a54cecfaf/go.mod h1:e3ol0bHkkaD4yx6LqhblEBTupZgPOegl3kmGS8GHQWE=
 golang.org/x/crypto v0.17.0 h1:r8bRNjWL3GshPW3gkd+RpvzWrZAwPS49OmTGZ/uhM4k=
 golang.org/x/crypto v0.17.0/go.mod h1:gCAAfMLgwOJRpTjQ2zCCt2OcSfYMTeZVSRtQlPC7Nq4=
 golang.org/x/exp v0.0.0-20230905200255-921286631fa9 h1:GoHiUyI/Tp2nVkLI2mCxVkOjsbSXD66ic0XW0js0R9g=
