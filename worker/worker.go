@@ -353,6 +353,17 @@ func VerifyProof(proofString string, vkString string) string {
 		return "false"
 	}
 
+	// The pinned gnark verifier never checks len(proof.Commitments): extra
+	// commitments join the pairing check (proof rebinding), too few panic.
+	// Reject any mismatch explicitly.
+	bnProof := g16ProofWithPublicInputs.Proof.(*groth16_bn254.Proof)
+	bnVK := g16VerifyingKey.VK.(*groth16_bn254.VerifyingKey)
+	if len(bnProof.Commitments) != len(bnVK.PublicAndCommitmentCommitted) {
+		fmt.Printf("invalid number of proof commitments, got %d, expected %d\n",
+			len(bnProof.Commitments), len(bnVK.PublicAndCommitmentCommitted))
+		return "false"
+	}
+
 	if err := groth16.Verify(g16ProofWithPublicInputs.Proof, g16VerifyingKey.VK, g16ProofWithPublicInputs.PublicInputs); err != nil {
 		fmt.Println(err)
 		return "false"
