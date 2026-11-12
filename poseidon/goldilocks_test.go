@@ -1,6 +1,7 @@
 package poseidon
 
 import (
+	"math/big"
 	"testing"
 
 	gl "github.com/cf/gnark-plonky2-verifier/goldilocks"
@@ -10,6 +11,75 @@ import (
 	"github.com/zilong-dai/gnark/frontend/cs/r1cs"
 	"github.com/zilong-dai/gnark/test"
 )
+
+type sBoxCircuit struct {
+	In, Out frontend.Variable
+}
+
+func (c *sBoxCircuit) Define(api frontend.API) error {
+	chip := NewGoldilocksChip(api)
+	out := chip.sBoxMonomial(gl.NewVariable(c.In))
+	api.AssertIsEqual(out.Limb, c.Out)
+	return nil
+}
+
+func TestSBoxCanonicalBoundaries(t *testing.T) {
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &sBoxCircuit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := []*big.Int{big.NewInt(0), big.NewInt(1), new(big.Int).Sub(gl.MODULUS, big.NewInt(1)), new(big.Int).Sub(gl.MODULUS, big.NewInt(2))}
+	for _, x := range values {
+		out := new(big.Int).Exp(x, big.NewInt(7), gl.MODULUS)
+		witness, err := frontend.NewWitness(&sBoxCircuit{In: x, Out: out}, ecc.BN254.ScalarField())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ccs.IsSolved(witness); err != nil {
+			t.Errorf("input %s: %v", x, err)
+		}
+	}
+}
+
+type mdsBoundaryCircuit struct {
+	In  [SPONGE_WIDTH]frontend.Variable
+	Out [SPONGE_WIDTH]frontend.Variable
+}
+
+func (c *mdsBoundaryCircuit) Define(api frontend.API) error {
+	var state GoldilocksState
+	for i := range state {
+		state[i] = gl.NewVariable(c.In[i])
+	}
+	out := NewGoldilocksChip(api).mdsLayer(state)
+	for i := range out {
+		api.AssertIsEqual(out[i].Limb, c.Out[i])
+	}
+	return nil
+}
+
+func TestMDSCanonicalUpperBoundary(t *testing.T) {
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &mdsBoundaryCircuit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assignment mdsBoundaryCircuit
+	for i := range assignment.In {
+		assignment.In[i] = new(big.Int).Sub(gl.MODULUS, big.NewInt(1))
+		coefficientSum := int64(256)
+		if i == 0 {
+			coefficientSum += 8
+		}
+		assignment.Out[i] = new(big.Int).Sub(gl.MODULUS, big.NewInt(coefficientSum))
+	}
+	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ccs.IsSolved(witness); err != nil {
+		t.Fatal(err)
+	}
+}
 
 type TestPoseidonCircuit struct {
 	In  [12]frontend.Variable

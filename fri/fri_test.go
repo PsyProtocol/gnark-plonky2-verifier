@@ -10,6 +10,7 @@ import (
 	"github.com/cf/gnark-plonky2-verifier/types"
 	"github.com/cf/gnark-plonky2-verifier/variables"
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark-crypto/field/goldilocks"
 	"github.com/zilong-dai/gnark/frontend"
 	"github.com/zilong-dai/gnark/test"
 )
@@ -52,6 +53,7 @@ func (circuit *TestFriCircuit) Define(api frontend.API) error {
 		proofWithPis.Proof.OpeningProof.CommitPhaseMerkleCaps,
 		proofWithPis.Proof.OpeningProof.FinalPoly,
 		proofWithPis.Proof.OpeningProof.PowWitness,
+		uint64(commonCircuitData.FriParams.DegreeBits),
 		commonCircuitData.Config.FriConfig,
 	)
 
@@ -104,6 +106,14 @@ func (circuit *TestFriCircuit) Define(api frontend.API) error {
 }
 
 func TestDecodeBlockFriVerification(t *testing.T) {
+	// This 2024 fixture predates plonky2-hwa's Goldilocks generator change.
+	// Keep its original constants scoped to this legacy-protocol test.
+	oldGenerator, oldRoot := gl.MULTIPLICATIVE_GROUP_GENERATOR, gl.POWER_OF_TWO_GENERATOR
+	gl.MULTIPLICATIVE_GROUP_GENERATOR = goldilocks.NewElement(7)
+	gl.POWER_OF_TWO_GENERATOR = goldilocks.NewElement(1753635133440165772)
+	t.Cleanup(func() {
+		gl.MULTIPLICATIVE_GROUP_GENERATOR, gl.POWER_OF_TWO_GENERATOR = oldGenerator, oldRoot
+	})
 	assert := test.NewAssert(t)
 
 	proofWithPIsFilename := "../testdata/decode_block/proof_with_public_inputs.json"

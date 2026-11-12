@@ -205,12 +205,56 @@ func (f *Chip) calculateSubgroupX(
 	return f.gl.Mul(g, product)
 }
 
+// precomputeAlphaPowers returns 1, alpha, ..., alpha^maxExponent.
+// The caller must supply a canonical Goldilocks extension element.
+func (f *Chip) precomputeAlphaPowers(alpha gl.QuadraticExtensionVariable, maxExponent int) []gl.QuadraticExtensionVariable {
+	powers := make([]gl.QuadraticExtensionVariable, maxExponent+1)
+	powers[0] = gl.OneExtension()
+	if maxExponent > 0 {
+		// Challenge values are normally already canonical; enforce the
+		// precondition here as well before they become shared powers.
+		f.gl.RangeCheckQE(alpha)
+		powers[1] = alpha
+	}
+	for i := 2; i <= maxExponent; i++ {
+		powers[i] = f.gl.MulExtension(powers[i-1], alpha)
+	}
+	return powers
+}
+
+// reduceBaseWithPowers evaluates sum evals[i]*powers[i], reducing each
+// block of at most 8192 products. Each scalar and power coefficient is
+// canonical; each product is <p^2 and the partial sum is <2^13*p^2+p.
+// Consequently the quotient is <2^77, and a bound of 80 bits suffices.
+func (f *Chip) reduceBaseWithPowers(evals []gl.Variable, powers []gl.QuadraticExtensionVariable) gl.QuadraticExtensionVariable {
+	if len(powers) < len(evals) {
+		panic("not enough alpha powers")
+	}
+	const blockSize = 8192
+	accum := gl.ZeroExtension()
+	pending := 0
+	for i, eval := range evals {
+		f.gl.RangeCheck(eval)
+		accum[0] = f.gl.MulAddNoReduce(eval, powers[i][0], accum[0])
+		accum[1] = f.gl.MulAddNoReduce(eval, powers[i][1], accum[1])
+		pending++
+		if pending == blockSize {
+			accum = gl.NewQuadraticExtensionVariable(f.gl.ReduceWithMaxBits(accum[0], 80), f.gl.ReduceWithMaxBits(accum[1], 80))
+			pending = 0
+		}
+	}
+	if pending != 0 {
+		accum = gl.NewQuadraticExtensionVariable(f.gl.ReduceWithMaxBits(accum[0], 80), f.gl.ReduceWithMaxBits(accum[1], 80))
+	}
+	return accum
+}
+
 func (f *Chip) friCombineInitial(
 	instance InstanceInfo,
 	proof variables.FriInitialTreeProof,
-	friAlpha gl.QuadraticExtensionVariable,
 	subgroupX_QE gl.QuadraticExtensionVariable,
 	precomputedReducedEval []gl.QuadraticExtensionVariable,
+	precomputedAlphaPowers []gl.QuadraticExtensionVariable,
 ) gl.QuadraticExtensionVariable {
 	sum := gl.ZeroExtension()
 
@@ -223,21 +267,17 @@ func (f *Chip) friCombineInitial(
 		reducedOpenings := precomputedReducedEval[i]
 
 		point := batch.Point
-		evals := make([]gl.QuadraticExtensionVariable, 0)
+		evals := make([]gl.Variable, 0, len(batch.Polynomials))
 		for _, polynomial := range batch.Polynomials {
-			evals = append(
-				evals,
-				gl.QuadraticExtensionVariable{
-					proof.EvalsProofs[polynomial.OracleIndex].Elements[polynomial.PolynomialInfo],
-					gl.Zero(),
-				},
-			)
+			evals = append(evals, proof.EvalsProofs[polynomial.OracleIndex].Elements[polynomial.PolynomialInfo])
 		}
-
-		reducedEvals := f.gl.ReduceWithPowers(evals, friAlpha)
+		if len(precomputedAlphaPowers) <= len(evals) {
+			panic("not enough alpha powers")
+		}
+		reducedEvals := f.reduceBaseWithPowers(evals, precomputedAlphaPowers)
 		numerator := f.gl.SubExtensionNoReduce(reducedEvals, reducedOpenings)
 		denominator := f.gl.SubExtension(subgroupX_QE, point)
-		sum = f.gl.MulExtension(f.gl.ExpExtension(friAlpha, uint64(len(evals))), sum)
+		sum = f.gl.MulExtension(precomputedAlphaPowers[len(evals)], sum)
 		inv, hasInv := f.gl.InverseExtension(denominator)
 		f.api.AssertIsEqual(hasInv, frontend.Variable(1))
 		sum = f.gl.MulAddExtension(
@@ -253,7 +293,7 @@ func (f *Chip) friCombineInitial(
 func (f *Chip) finalPolyEval(finalPoly variables.PolynomialCoeffs, point gl.QuadraticExtensionVariable) gl.QuadraticExtensionVariable {
 	ret := gl.ZeroExtension()
 	for i := len(finalPoly.Coeffs) - 1; i >= 0; i-- {
-		ret = f.gl.MulAddExtension(ret, point, finalPoly.Coeffs[i])
+		ret = f.gl.MulAddExtensionCanonical(ret, point, finalPoly.Coeffs[i])
 	}
 	return ret
 }
@@ -267,48 +307,34 @@ func (f *Chip) interpolate(
 	if len(xPoints) != len(yPoints) || len(xPoints) != len(barycentricWeights) {
 		panic("length of xPoints, yPoints, and barycentricWeights are inconsistent")
 	}
-
-	lX := gl.OneExtension()
-	for i := 0; i < len(xPoints); i++ {
-		lX = f.gl.SubMulExtension(x, xPoints[i], lX)
+	// Each y value comes from the proof. Constrain it even when the
+	// verifier-wide rangeCheckProof call is disabled.
+	for _, y := range yPoints {
+		f.gl.RangeCheckQE(y)
 	}
-
+	// Prefix products P[i] = product_{j<i} (x-x_j).
+	n := len(xPoints)
+	differences := make([]gl.QuadraticExtensionVariable, n)
+	prefix := make([]gl.QuadraticExtensionVariable, n+1)
+	prefix[0] = gl.OneExtension()
+	for i := range xPoints {
+		differences[i] = f.gl.SubExtension(x, xPoints[i])
+		prefix[i+1] = f.gl.MulExtension(prefix[i], differences[i])
+	}
+	// The previous implementation's division enforces every denominator to
+	// be nonzero, including when x equals an interpolation point.
+	f.api.AssertIsEqual(f.gl.IsZero(prefix[n]), 0)
+	suffix := gl.OneExtension()
 	sum := gl.ZeroExtension()
-
-	lookupFromPoints := frontend.Variable(1)
-	for i := 0; i < len(xPoints); i++ {
-		quotient, hasQuotient := f.gl.DivExtension(
-			barycentricWeights[i],
-			f.gl.SubExtension(
-				x,
-				xPoints[i],
-			),
-		)
-
-		lookupFromPoints = f.api.Mul(hasQuotient, lookupFromPoints)
-
-		sum = f.gl.AddExtension(
-			f.gl.MulExtension(
-				yPoints[i],
-				quotient,
-			),
-			sum,
-		)
+	for i := n - 1; i >= 0; i-- {
+		others := f.gl.MulExtension(prefix[i], suffix)
+		weighted := f.gl.MulExtension(yPoints[i], barycentricWeights[i])
+		sum = f.gl.MulAddExtensionCanonical(weighted, others, sum)
+		if i != 0 {
+			suffix = f.gl.MulExtension(suffix, differences[i])
+		}
 	}
-
-	interpolation := f.gl.MulExtension(lX, sum)
-
-	lookupVal := gl.ZeroExtension()
-	// Now check if x is already within the xPoints
-	for i := 0; i < len(xPoints); i++ {
-		lookupVal = f.gl.Lookup(
-			f.gl.IsZero(f.gl.SubExtension(x, xPoints[i])),
-			lookupVal,
-			yPoints[i],
-		)
-	}
-
-	return f.gl.Lookup(lookupFromPoints, lookupVal, interpolation)
+	return sum
 }
 
 func (f *Chip) computeEvaluation(
@@ -359,25 +385,28 @@ func (f *Chip) computeEvaluation(
 		xPoints[i] = f.gl.MulExtension(xPoints[i-1], g_F)
 	}
 
-	// OPTIMIZE:  This is n^2.  Is there a way to do this better?
-	// Compute the barycentric weights
+	// For n=1 there are no differences in the product, so its weight is 1
+	// even when the coset starts at zero.
 	barycentricWeights := make([]gl.QuadraticExtensionVariable, len(xPoints))
-	for i := 0; i < len(xPoints); i++ {
-		barycentricWeights[i] = gl.OneExtension()
-		for j := 0; j < len(xPoints); j++ {
-			if i != j {
-				barycentricWeights[i] = f.gl.SubMulExtension(
-					xPoints[i],
-					xPoints[j],
-					barycentricWeights[i],
-				)
-			}
+	if arity == 1 {
+		barycentricWeights[0] = gl.OneExtension()
+	} else {
+		// x_i = s*g^i with g a primitive n-th root and s != 0. The
+		// derivative of X^n-s^n at x_i is n*s^n/x_i, hence the
+		// barycentric weight is x_i/(n*s^n).
+		inverseStart, hasInverse := f.gl.Inverse(cosetStart)
+		f.api.AssertIsEqual(hasInverse, 1)
+		inverseStartPow := inverseStart
+		for i := uint64(0); i < arityBits; i++ {
+			inverseStartPow = f.gl.Mul(inverseStartPow, inverseStartPow)
 		}
-		// Take the inverse of the barycentric weights
-		// OPTIMIZE: Can provide a witness to this value
-		inv, hasInv := f.gl.InverseExtension(barycentricWeights[i])
-		f.api.AssertIsEqual(hasInv, frontend.Variable(1))
-		barycentricWeights[i] = inv
+		nField := goldilocks.NewElement(uint64(arity))
+		nInverse := goldilocks.NewElement(0)
+		nInverse.Inverse(&nField)
+		factor := f.gl.Mul(inverseStartPow, gl.NewVariable(nInverse.Uint64()))
+		for i := range xPoints {
+			barycentricWeights[i] = f.gl.Mul(xPoints[i][0], factor).ToQuadraticExtension()
+		}
 	}
 
 	return f.interpolate(beta, xPoints, yPoints, barycentricWeights)
@@ -387,6 +416,7 @@ func (f *Chip) verifyQueryRound(
 	instance InstanceInfo,
 	challenges *variables.FriChallenges,
 	precomputedReducedEval []gl.QuadraticExtensionVariable,
+	precomputedAlphaPowers []gl.QuadraticExtensionVariable,
 	initialMerkleCaps []variables.FriMerkleCap,
 	proof *variables.FriProof,
 	xIndex gl.Variable,
@@ -411,9 +441,9 @@ func (f *Chip) verifyQueryRound(
 	oldEval := f.friCombineInitial(
 		instance,
 		roundProof.InitialTreesProof,
-		challenges.FriAlpha,
 		subgroupX_QE,
 		precomputedReducedEval,
+		precomputedAlphaPowers,
 	)
 
 	for i, arityBits := range f.friParams.ReductionArityBits {
@@ -528,6 +558,19 @@ func (f *Chip) VerifyFriProof(
 		))
 	}
 
+	// The alpha and batch polynomial counts are shared by every query round.
+	// Avoid introducing unused constraints when there are no query rounds.
+	var alphaPowers []gl.QuadraticExtensionVariable
+	if len(friChallenges.FriQueryIndices) != 0 {
+		maxExponent := 0
+		for _, batch := range instance.Batches {
+			if len(batch.Polynomials) > maxExponent {
+				maxExponent = len(batch.Polynomials)
+			}
+		}
+		alphaPowers = f.precomputeAlphaPowers(friChallenges.FriAlpha, maxExponent)
+	}
+
 	for idx, xIndex := range friChallenges.FriQueryIndices {
 
 		roundProof := friProof.QueryRoundProofs[idx]
@@ -536,6 +579,7 @@ func (f *Chip) VerifyFriProof(
 			instance,
 			friChallenges,
 			precomputedReducedEvals,
+			alphaPowers,
 			initialMerkleCaps,
 			friProof,
 			xIndex,

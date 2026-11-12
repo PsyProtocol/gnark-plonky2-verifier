@@ -58,7 +58,13 @@ func (p *Chip) SubExtensionNoReduce(a, b QuadraticExtensionVariable) QuadraticEx
 // Multiplies quadratic extension variable in the Goldilocks field.
 func (p *Chip) MulExtension(a, b QuadraticExtensionVariable) QuadraticExtensionVariable {
 	product := p.MulExtensionNoReduce(a, b)
-	return p.ReduceExtension(product)
+	// With canonical inputs, c0 < 8*p^2 and c1 < 2*p^2. Both
+	// quotients are therefore below 8*p < 2^67; use an aligned bound
+	// so the commitment-based checker can also handle it.
+	return NewQuadraticExtensionVariable(
+		p.ReduceWithMaxBits(product[0], 80),
+		p.ReduceWithMaxBits(product[1], 80),
+	)
 }
 
 // Multiplies quadratic extension variable in the Goldilocks field without reducing.
@@ -76,6 +82,18 @@ func (p *Chip) MulAddExtension(a, b, c QuadraticExtensionVariable) QuadraticExte
 	product := p.MulExtensionNoReduce(a, b)
 	sum := p.AddExtensionNoReduce(product, c)
 	return p.ReduceExtension(sum)
+}
+
+// MulAddExtensionCanonical requires all input coefficients to be canonical.
+// The result is a subset of the general MulAddExtension constraints: each
+// quotient is below 9*p < 2^68 for canonical inputs.
+func (p *Chip) MulAddExtensionCanonical(a, b, c QuadraticExtensionVariable) QuadraticExtensionVariable {
+	product := p.MulExtensionNoReduce(a, b)
+	sum := p.AddExtensionNoReduce(product, c)
+	return NewQuadraticExtensionVariable(
+		p.ReduceWithMaxBits(sum[0], 80),
+		p.ReduceWithMaxBits(sum[1], 80),
+	)
 }
 
 func (p *Chip) MulAddExtensionNoReduce(a, b, c QuadraticExtensionVariable) QuadraticExtensionVariable {
@@ -180,14 +198,7 @@ func (p *Chip) ReduceWithPowers(
 ) QuadraticExtensionVariable {
 	sum := ZeroExtension()
 	for i := len(terms) - 1; i >= 0; i-- {
-		sum = p.AddExtensionNoReduce(
-			p.MulExtensionNoReduce(
-				sum,
-				scalar,
-			),
-			terms[i],
-		)
-		sum = p.ReduceExtension(sum)
+		sum = p.MulAddExtensionCanonical(sum, scalar, terms[i])
 	}
 	return sum
 }

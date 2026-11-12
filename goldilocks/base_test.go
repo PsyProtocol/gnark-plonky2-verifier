@@ -9,10 +9,95 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/zilong-dai/gnark/backend"
 	"github.com/zilong-dai/gnark/frontend"
+	"github.com/zilong-dai/gnark/frontend/cs/r1cs"
 	"github.com/zilong-dai/gnark/frontend/cs/scs"
 	"github.com/zilong-dai/gnark/profile"
 	"github.com/zilong-dai/gnark/test"
 )
+
+func TestMain(m *testing.M) {
+	// gnark's test engine implements Commit but not Rangechecker. Match the
+	// R1CS bit-decomposition path used by this verifier during tests.
+	if err := os.Setenv("USE_BIT_DECOMPOSITION_RANGE_CHECK", "true"); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
+
+type bitDecompositionRangeCheckCircuit struct {
+	X, Square frontend.Variable
+}
+
+func (c *bitDecompositionRangeCheckCircuit) Define(api frontend.API) error {
+	gl := New(api)
+	if gl.rangeCheckerType != BIT_DECOMP_RANGE_CHECKER {
+		return fmt.Errorf("expected bit decomposition range checker, got %v", gl.rangeCheckerType)
+	}
+	gl.RangeCheckWithMaxBits(NewVariable(c.X), 8)
+	api.AssertIsEqual(api.Mul(c.X, c.X), c.Square)
+	return nil
+}
+
+func TestBitDecompositionRangeCheckRejectsOutOfRange(t *testing.T) {
+	t.Setenv("USE_BIT_DECOMPOSITION_RANGE_CHECK", "false")
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &bitDecompositionRangeCheckCircuit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		x, square int
+		valid     bool
+	}{{255, 65025, true}, {256, 65536, false}} {
+		witness, err := frontend.NewWitness(&bitDecompositionRangeCheckCircuit{X: tc.x, Square: tc.square}, ecc.BN254.ScalarField())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = ccs.IsSolved(witness)
+		if (err == nil) != tc.valid {
+			t.Errorf("x=%d: valid=%v, solve error=%v", tc.x, tc.valid, err)
+		}
+	}
+}
+
+type canonicalAddCircuit struct {
+	A, B, Sum frontend.Variable
+}
+
+func (c *canonicalAddCircuit) Define(api frontend.API) error {
+	chip := New(api)
+	result := chip.Add(NewVariable(c.A), NewVariable(c.B))
+	api.AssertIsEqual(result.Limb, c.Sum)
+	return nil
+}
+
+func TestCanonicalAddBoundaries(t *testing.T) {
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &canonicalAddCircuit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	max := new(big.Int).Sub(MODULUS, big.NewInt(1))
+	values := []*big.Int{big.NewInt(0), big.NewInt(1), max}
+	for _, a := range values {
+		for _, b := range values {
+			sum := new(big.Int).Add(a, b)
+			sum.Mod(sum, MODULUS)
+			witness, err := frontend.NewWitness(&canonicalAddCircuit{A: a, B: b, Sum: sum}, ecc.BN254.ScalarField())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ccs.IsSolved(witness); err != nil {
+				t.Errorf("%s + %s: %v", a, b, err)
+			}
+		}
+	}
+	witness, err := frontend.NewWitness(&canonicalAddCircuit{A: max, B: 1, Sum: 1}, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ccs.IsSolved(witness); err == nil {
+		t.Fatal("accepted an incorrect modular sum")
+	}
+}
 
 type TestGoldilocksRangeCheckCircuit struct {
 	X frontend.Variable
@@ -22,6 +107,34 @@ func (c *TestGoldilocksRangeCheckCircuit) Define(api frontend.API) error {
 	glApi := New(api)
 	glApi.RangeCheck(NewVariable(c.X))
 	return nil
+}
+
+func TestGoldilocksRangeCheckR1CSBoundaries(t *testing.T) {
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &TestGoldilocksRangeCheckCircuit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		x     *big.Int
+		valid bool
+	}{
+		{big.NewInt(0), true},
+		{new(big.Int).Sub(MODULUS, big.NewInt(1)), true},
+		{new(big.Int).Set(MODULUS), false},
+		{new(big.Int).Add(MODULUS, big.NewInt(1)), false},
+		{new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 64), big.NewInt(1)), false},
+		{new(big.Int).Sub(ecc.BN254.ScalarField(), big.NewInt(1)), false},
+	}
+	for _, tc := range cases {
+		witness, err := frontend.NewWitness(&TestGoldilocksRangeCheckCircuit{X: tc.x}, ecc.BN254.ScalarField())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = ccs.IsSolved(witness)
+		if (err == nil) != tc.valid {
+			t.Errorf("x=%s: valid=%v, solve error=%v", tc.x, tc.valid, err)
+		}
+	}
 }
 func TestGoldilocksRangeCheck(t *testing.T) {
 	assert := test.NewAssert(t)

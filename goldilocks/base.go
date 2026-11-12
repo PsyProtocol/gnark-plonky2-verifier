@@ -160,7 +160,16 @@ func New(api frontend.API) *Chip {
 
 // Adds two goldilocks field elements and returns a value within the goldilocks field.
 func (p *Chip) Add(a Variable, b Variable) Variable {
-	return p.MulAdd(a, NewVariable(1), b)
+	// Canonical operands satisfy a+b < 2*MODULUS, so the quotient is a bit.
+	result, err := p.api.Compiler().NewHint(MulAddHint, 2, a.Limb, 1, b.Limb)
+	if err != nil {
+		panic(err)
+	}
+	quotient, remainder := result[0], NewVariable(result[1])
+	p.api.AssertIsBoolean(quotient)
+	p.RangeCheck(remainder)
+	p.api.AssertIsEqual(p.api.Add(a.Limb, b.Limb), p.api.Add(p.api.Mul(quotient, MODULUS), remainder.Limb))
+	return remainder
 }
 
 // Adds two goldilocks field elements and returns a value that may not be within the goldilocks field
@@ -360,6 +369,19 @@ func SplitLimbsHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 
 // Range checks a field element x to be less than the Golidlocks modulus 2 ^ 64 - 2 ^ 32 + 1.
 func (p *Chip) RangeCheck(x Variable) {
+	// A direct 64-bit decomposition avoids splitting a hint into two
+	// separately decomposed limbs on the native and bit-decomposition paths.
+	// Because 64 is below the host field size, the decomposition also rules
+	// out host-field wraparound. The largest valid value has high limb
+	// 2^32-1 only when the low limb is zero.
+	if p.rangeCheckerType == NATIVE_RANGE_CHECKER || p.rangeCheckerType == BIT_DECOMP_RANGE_CHECKER {
+		bits := p.api.ToBinary(x.Limb, 64)
+		low := p.api.FromBinary(bits[:32]...)
+		high := p.api.FromBinary(bits[32:]...)
+		highIsMax := p.api.IsZero(p.api.Sub(high, uint64(1<<32-1)))
+		p.api.AssertIsEqual(p.api.Mul(highIsMax, low), 0)
+		return
+	}
 	// The Goldilocks' modulus is 2^64 - 2^32 + 1, which is:
 	//
 	// 		1111111111111111111111111111111100000000000000000000000000000001
@@ -410,8 +432,7 @@ func (p *Chip) AssertIsEqual(x, y Variable) {
 
 func (p *Chip) rangeCheckerCheck(x frontend.Variable, nbBits int) {
 	switch p.rangeCheckerType {
-	case NATIVE_RANGE_CHECKER:
-	case BIT_DECOMP_RANGE_CHECKER:
+	case NATIVE_RANGE_CHECKER, BIT_DECOMP_RANGE_CHECKER:
 		p.rangeChecker.Check(x, nbBits)
 	case COMMIT_RANGE_CHECKER:
 		p.collectedMutex.Lock()

@@ -80,7 +80,7 @@ func gnarkRangeCheckerSelector(api frontend.API) RangeCheckerType {
 	// Emulate the logic within rangecheck.New
 	// https://github.com/Consensys/gnark/blob/3421eaa7d544286abf3de8c46282b8d4da6d5da0/std/rangecheck/rangecheck.go#L24
 	if _, ok := api.(frontend.Rangechecker); ok {
-		return NATIVE_RANGE_CHECKER
+		return BIT_DECOMP_RANGE_CHECKER
 	} else if _, ok := api.(frontend.Committer); ok {
 		return COMMIT_RANGE_CHECKER
 	} else {

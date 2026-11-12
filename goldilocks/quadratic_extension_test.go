@@ -1,12 +1,117 @@
 package goldilocks
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/zilong-dai/gnark/frontend"
+	"github.com/zilong-dai/gnark/frontend/cs/r1cs"
 	"github.com/zilong-dai/gnark/test"
 )
+
+func TestQuadraticExtensionMulMaxCanonical(t *testing.T) {
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &TestQuadraticExtensionMulCircuit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	max := new(big.Int).Sub(MODULUS, big.NewInt(1))
+	operand := NewQuadraticExtensionVariable(NewVariable(max), NewVariable(max))
+	assignment := TestQuadraticExtensionMulCircuit{
+		Operand1: operand, Operand2: operand,
+		ExpectedResult: NewQuadraticExtensionVariable(NewVariable(8), NewVariable(2)),
+	}
+	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ccs.IsSolved(witness); err != nil {
+		t.Fatal(err)
+	}
+	assignment.ExpectedResult[0] = NewVariable(9)
+	witness, err = frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ccs.IsSolved(witness); err == nil {
+		t.Fatal("accepted an incorrect extension product")
+	}
+}
+
+type canonicalExtensionMulAddCircuit struct {
+	A, B, C, Result QuadraticExtensionVariable
+}
+
+func (c *canonicalExtensionMulAddCircuit) Define(api frontend.API) error {
+	chip := New(api)
+	result := chip.MulAddExtensionCanonical(c.A, c.B, c.C)
+	chip.AssertIsEqualExtension(result, c.Result)
+	return nil
+}
+
+func TestCanonicalExtensionMulAddMax(t *testing.T) {
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &canonicalExtensionMulAddCircuit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	max := new(big.Int).Sub(MODULUS, big.NewInt(1))
+	operand := NewQuadraticExtensionVariable(NewVariable(max), NewVariable(max))
+	assignment := canonicalExtensionMulAddCircuit{
+		A: operand, B: operand, C: operand,
+		Result: NewQuadraticExtensionVariable(NewVariable(7), NewVariable(1)),
+	}
+	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ccs.IsSolved(witness); err != nil {
+		t.Fatal(err)
+	}
+	assignment.Result[0] = NewVariable(8)
+	witness, err = frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ccs.IsSolved(witness); err == nil {
+		t.Fatal("accepted an incorrect extension multiply-add")
+	}
+}
+
+type reduceWithPowersComparisonCircuit struct {
+	Terms  [3]QuadraticExtensionVariable
+	Scalar QuadraticExtensionVariable
+}
+
+func (c *reduceWithPowersComparisonCircuit) Define(api frontend.API) error {
+	chip := New(api)
+	optimized := chip.ReduceWithPowers(c.Terms[:], c.Scalar)
+	general := ZeroExtension()
+	for i := len(c.Terms) - 1; i >= 0; i-- {
+		general = chip.MulAddExtension(general, c.Scalar, c.Terms[i])
+	}
+	chip.AssertIsEqualExtension(optimized, general)
+	return nil
+}
+
+func TestReduceWithPowersMatchesGeneral(t *testing.T) {
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &reduceWithPowersComparisonCircuit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	max := new(big.Int).Sub(MODULUS, big.NewInt(1))
+	values := []frontend.Variable{0, 1, max}
+	for _, value := range values {
+		v := NewQuadraticExtensionVariable(NewVariable(value), NewVariable(value))
+		assignment := reduceWithPowersComparisonCircuit{Terms: [3]QuadraticExtensionVariable{v, v, v}, Scalar: v}
+		witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ccs.IsSolved(witness); err != nil {
+			t.Errorf("value %v: %v", value, err)
+		}
+	}
+}
 
 type TestQuadraticExtensionMulCircuit struct {
 	Operand1       QuadraticExtensionVariable
