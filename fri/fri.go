@@ -162,24 +162,13 @@ func (f *Chip) expFromBitsConstBase(
 ) gl.Variable {
 	product := gl.One()
 	for i, bit := range exponentBits {
-		// If the bit is 1, we multiply product by base^pow.
-		// We can arithmetize this as:
-		//     product *= 1 + bit (base^pow - 1)
-		//     product = (base^pow - 1) product bit + product
+		// Select between the canonical constants 1 and base^pow before
+		// multiplying, instead of reducing multiple intermediate products.
 		pow := int64(1 << i)
 		basePow := goldilocks.NewElement(0)
 		basePow.Exp(base, big.NewInt(pow))
-		basePowVariable := gl.NewVariable(basePow.Uint64() - 1)
-		product = f.gl.Add(
-			f.gl.Mul(
-				f.gl.Mul(
-					basePowVariable,
-					product,
-				),
-				gl.NewVariable(bit),
-			),
-			product,
-		)
+		factor := f.api.Select(bit, basePow.Uint64(), 1)
+		product = f.gl.Mul(product, gl.NewVariable(factor))
 	}
 	return product
 }
