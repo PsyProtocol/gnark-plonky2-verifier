@@ -42,6 +42,15 @@ func (c *VerifierChip) GetPublicInputsHash(publicInputs []gl.Variable) poseidon.
 	return c.poseidonGlChip.HashNoPad(publicInputs)
 }
 
+func (c *VerifierChip) booleanPublicInputsHash(publicInputs []gl.Variable) poseidon.GoldilocksHashOut {
+	for _, input := range publicInputs {
+		c.api.AssertIsBoolean(input.Limb)
+	}
+	var hash poseidon.GoldilocksHashOut
+	copy(hash[:], c.poseidonGlChip.HashNToMNoPad(publicInputs, poseidon.POSEIDON_GL_HASH_SIZE))
+	return hash
+}
+
 func (c *VerifierChip) GetChallenges(
 	proof variables.Proof,
 	publicInputsHash poseidon.GoldilocksHashOut,
@@ -169,6 +178,26 @@ func (c *VerifierChip) Verify(
 
 	// Generate the parts of the witness that is for the plonky2 proof input
 	publicInputsHash := c.GetPublicInputsHash(publicInputs)
+	c.verifyWithPublicInputsHash(proof, publicInputsHash, verifierData)
+}
+
+// VerifyBooleanPublicInputs verifies a proof whose public inputs are bits.
+// It constrains the inputs itself so callers need not trust a prior check.
+func (c *VerifierChip) VerifyBooleanPublicInputs(
+	proof variables.Proof,
+	publicInputs []gl.Variable,
+	verifierData variables.VerifierOnlyCircuitData,
+) {
+	c.rangeCheckProof(proof)
+	publicInputsHash := c.booleanPublicInputsHash(publicInputs)
+	c.verifyWithPublicInputsHash(proof, publicInputsHash, verifierData)
+}
+
+func (c *VerifierChip) verifyWithPublicInputsHash(
+	proof variables.Proof,
+	publicInputsHash poseidon.GoldilocksHashOut,
+	verifierData variables.VerifierOnlyCircuitData,
+) {
 	proofChallenges := c.GetChallenges(proof, publicInputsHash, verifierData)
 
 	c.plonkChip.Verify(proofChallenges, proof.Openings, publicInputsHash)

@@ -139,7 +139,7 @@ func (c *CRVerifierCircuit) Define(api frontend.API) error {
 	api.AssertIsEqual(c.PublicInputs[0], hi)
 	api.AssertIsEqual(c.PublicInputs[1], lo)
 
-	verifierChip.Verify(c.Proof, c.OriginalPublicInputs, c.VerifierOnlyCircuitData)
+	verifierChip.VerifyBooleanPublicInputs(c.Proof, c.OriginalPublicInputs, c.VerifierOnlyCircuitData)
 
 	return nil
 }
