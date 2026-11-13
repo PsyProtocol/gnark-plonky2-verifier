@@ -320,6 +320,17 @@ func (p *Chip) ReduceWithMaxBits(x Variable, maxNbBits uint64) Variable {
 	return remainder
 }
 
+// ReduceWithBound uses a tight quotient bit bound when possible and rounds it
+// up to the range checker's limb width for the commitment-based checker.
+// Callers must ensure the wider bound is safe in the host field as well.
+func (p *Chip) ReduceWithBound(x Variable, quotientBits uint64) Variable {
+	if p.rangeCheckerType == COMMIT_RANGE_CHECKER {
+		width := uint64(EXPECTED_OPTIMAL_BASEWIDTH)
+		quotientBits = ((quotientBits + width - 1) / width) * width
+	}
+	return p.ReduceWithMaxBits(x, quotientBits)
+}
+
 // The hint used to compute Reduce.
 func ReduceHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
 	if len(inputs) != 1 {

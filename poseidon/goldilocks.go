@@ -127,7 +127,7 @@ func (c *GoldilocksChip) partialRounds(state GoldilocksState, roundCounter *int)
 	// below 2p and a uint64 coefficient. Each stays below 2^134, with a
 	// quotient below 2^71.
 	for i := 1; i < SPONGE_WIDTH; i++ {
-		state[i] = c.gl.ReduceWithMaxBits(state[i], 80)
+		state[i] = c.gl.ReduceWithBound(state[i], 71)
 	}
 
 	*roundCounter += N_PARTIAL_ROUNDS
@@ -415,7 +415,7 @@ func (c *GoldilocksChip) mdsPartialLayerInit(state GoldilocksState) GoldilocksSt
 	// result[0] is below 265p. Each other entry is a sum of 11 products of
 	// elements below 265p and uint64 constants; its quotient is below 2^76.
 	for i := 1; i < 12; i++ {
-		result[i] = c.gl.ReduceWithMaxBits(result[i], 80)
+		result[i] = c.gl.ReduceWithBound(result[i], 76)
 	}
 
 	return result
@@ -459,7 +459,7 @@ func (c *GoldilocksChip) mdsPartialLayerFast(state GoldilocksState, r int) Goldi
 	// The 11 lazy lanes are each <2^134, and each coefficient is <2^64.
 	// The sum is <2^202, so the quotient is <2^139 and no host-field
 	// wraparound is possible (including quotient * Goldilocks modulus).
-	d = c.gl.ReduceWithMaxBits(d, 144)
+	d = c.gl.ReduceWithBound(d, 139)
 
 	var result GoldilocksState
 	for i := 0; i < SPONGE_WIDTH; i++ {

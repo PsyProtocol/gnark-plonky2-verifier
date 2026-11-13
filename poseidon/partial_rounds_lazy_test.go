@@ -89,21 +89,30 @@ func TestLazyPartialRoundBounds(t *testing.T) {
 	}
 	max := new(big.Int).Sub(gl.MODULUS, big.NewInt(1))
 	max64 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 64), big.NewInt(1))
-	lane := new(big.Int).Mul(max, max64)
+	// Each round adds a canonical S-box output and a canonical constant.
+	lane := new(big.Int).Mul(new(big.Int).Mul(max, big.NewInt(2)), max64)
 	lane.Mul(lane, big.NewInt(N_PARTIAL_ROUNDS))
 	lane.Add(lane, max)
-	if lane.BitLen() > 133 {
+	if lane.BitLen() > 134 {
 		t.Fatalf("lane bound bit length %d", lane.BitLen())
+	}
+	if q := new(big.Int).Quo(lane, gl.MODULUS); q.BitLen() > 71 {
+		t.Fatalf("lane quotient bit length %d", q.BitLen())
 	}
 	d := new(big.Int).Mul(lane, max64)
 	d.Mul(d, big.NewInt(11))
-	d.Add(d, new(big.Int).Mul(max, max64))
-	if d.BitLen() > 201 {
+	d.Add(d, new(big.Int).Mul(new(big.Int).Mul(max, big.NewInt(2)), max64))
+	if d.BitLen() > 202 {
 		t.Fatalf("d bound bit length %d", d.BitLen())
 	}
 	q := new(big.Int).Quo(d, gl.MODULUS)
-	if q.BitLen() > 144 {
+	if q.BitLen() > 139 {
 		t.Fatalf("quotient bit length %d", q.BitLen())
+	}
+	initial := new(big.Int).Mul(gl.MODULUS, big.NewInt(265*11))
+	initial.Mul(initial, max64)
+	if q := new(big.Int).Quo(initial, gl.MODULUS); q.BitLen() > 76 {
+		t.Fatalf("initial matrix quotient bit length %d", q.BitLen())
 	}
 	constraintMax := new(big.Int).Lsh(new(big.Int).Set(gl.MODULUS), 144)
 	constraintMax.Sub(constraintMax, big.NewInt(1))
