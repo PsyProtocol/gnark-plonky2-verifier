@@ -1,12 +1,12 @@
 package plonk
 
 import (
-	"github.com/zilong-dai/gnark/frontend"
 	gl "github.com/cf/gnark-plonky2-verifier/goldilocks"
 	"github.com/cf/gnark-plonky2-verifier/plonk/gates"
 	"github.com/cf/gnark-plonky2-verifier/poseidon"
 	"github.com/cf/gnark-plonky2-verifier/types"
 	"github.com/cf/gnark-plonky2-verifier/variables"
+	"github.com/zilong-dai/gnark/frontend"
 )
 
 type PlonkChip struct {
@@ -118,6 +118,34 @@ func (p *PlonkChip) checkPartialProducts(
 	return partialProductChecks
 }
 
+// scalarMulAddCanonical requires canonical operands and returns a canonical
+// extension element. Combining the multiplication and addition avoids
+// reducing the intermediate scalar product.
+func scalarMulAddCanonical(g *gl.Chip, value gl.QuadraticExtensionVariable, scalar gl.Variable, add gl.QuadraticExtensionVariable) gl.QuadraticExtensionVariable {
+	return gl.NewQuadraticExtensionVariable(
+		g.MulAdd(value[0], scalar, add[0]),
+		g.MulAdd(value[1], scalar, add[1]),
+	)
+}
+
+func (p *PlonkChip) rangeCheckVanishingInputs(challenges variables.ProofChallenges, openings variables.OpeningSet) {
+	// The fused product plus addend is below p² for canonical operands;
+	// quotient and remainder constraints must not wrap the host field.
+	if p.api.Compiler().FieldBitLen() < 129 {
+		panic("PLONK scalar multiplication requires a host field larger than 2^128")
+	}
+	g := gl.New(p.api)
+	for _, beta := range challenges.PlonkBetas {
+		g.RangeCheck(beta)
+	}
+	for _, alpha := range challenges.PlonkAlphas {
+		g.RangeCheck(alpha)
+	}
+	for _, sigma := range openings.PlonkSigmas {
+		g.RangeCheckQE(sigma)
+	}
+}
+
 func (p *PlonkChip) evalVanishingPoly(
 	vars gates.EvaluationVars,
 	proofChallenges variables.ProofChallenges,
@@ -125,6 +153,9 @@ func (p *PlonkChip) evalVanishingPoly(
 	zetaPowN gl.QuadraticExtensionVariable,
 ) []gl.QuadraticExtensionVariable {
 	glApi := gl.New(p.api)
+	// PLONK also has independent callers. Check the inputs required by the
+	// fused scalar products here, including sigma entries not used below.
+	p.rangeCheckVanishingInputs(proofChallenges, openings)
 	constraintTerms := p.evaluateGatesChip.EvaluateGateConstraints(vars)
 
 	// Calculate the k[i] * x
@@ -156,21 +187,8 @@ func (p *PlonkChip) evalVanishingPoly(
 				gl.NewQuadraticExtensionVariable(proofChallenges.PlonkGammas[i], gl.Zero()),
 			)
 
-			numerator := glApi.AddExtension(
-				glApi.MulExtension(
-					gl.NewQuadraticExtensionVariable(proofChallenges.PlonkBetas[i], gl.Zero()),
-					sIDs[j],
-				),
-				wireValuePlusGamma,
-			)
-
-			denominator := glApi.AddExtension(
-				glApi.MulExtension(
-					gl.NewQuadraticExtensionVariable(proofChallenges.PlonkBetas[i], gl.Zero()),
-					openings.PlonkSigmas[j],
-				),
-				wireValuePlusGamma,
-			)
+			numerator := scalarMulAddCanonical(glApi, sIDs[j], proofChallenges.PlonkBetas[i], wireValuePlusGamma)
+			denominator := scalarMulAddCanonical(glApi, openings.PlonkSigmas[j], proofChallenges.PlonkBetas[i], wireValuePlusGamma)
 
 			numeratorValues = append(numeratorValues, numerator)
 			denominatorValues = append(denominatorValues, denominator)
@@ -193,13 +211,7 @@ func (p *PlonkChip) evalVanishingPoly(
 	// reverse iterate the vanishingPartialProductsTerms array
 	for i := len(vanishingTerms) - 1; i >= 0; i-- {
 		for j := uint64(0); j < p.commonData.Config.NumChallenges; j++ {
-			reducedValues[j] = glApi.AddExtension(
-				vanishingTerms[i],
-				glApi.ScalarMulExtension(
-					reducedValues[j],
-					proofChallenges.PlonkAlphas[j],
-				),
-			)
+			reducedValues[j] = scalarMulAddCanonical(glApi, reducedValues[j], proofChallenges.PlonkAlphas[j], vanishingTerms[i])
 		}
 	}
 

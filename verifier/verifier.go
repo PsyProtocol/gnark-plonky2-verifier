@@ -125,9 +125,8 @@ func (c *VerifierChip) rangeCheckProof(proof variables.Proof) {
 		c.glChip.RangeCheckQE(constant)
 	}
 
-	for _, plonkSigma := range proof.Openings.PlonkSigmas {
-		c.glChip.RangeCheckQE(plonkSigma)
-	}
+	// PLONK checks every sigma in evalVanishingPoly, including for its
+	// independent callers, before using them in fused scalar products.
 
 	for _, wire := range proof.Openings.Wires {
 		c.glChip.RangeCheckQE(wire)
