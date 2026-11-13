@@ -8,6 +8,7 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/zilong-dai/gnark/backend"
+	"github.com/zilong-dai/gnark/backend/groth16"
 	"github.com/zilong-dai/gnark/frontend"
 	"github.com/zilong-dai/gnark/frontend/cs/r1cs"
 	"github.com/zilong-dai/gnark/frontend/cs/scs"
@@ -96,6 +97,76 @@ func TestCanonicalAddBoundaries(t *testing.T) {
 	}
 	if err := ccs.IsSolved(witness); err == nil {
 		t.Fatal("accepted an incorrect modular sum")
+	}
+}
+
+type canonicalSubCircuit struct {
+	A, B, Difference frontend.Variable
+}
+
+func (c *canonicalSubCircuit) Define(api frontend.API) error {
+	chip := New(api)
+	optimized := chip.Sub(NewVariable(c.A), NewVariable(c.B))
+	legacy := chip.MulAdd(NewVariable(c.B), NegOne(), NewVariable(c.A))
+	api.AssertIsEqual(optimized.Limb, legacy.Limb)
+	api.AssertIsEqual(optimized.Limb, c.Difference)
+	return nil
+}
+
+func TestCanonicalSubBoundaries(t *testing.T) {
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &canonicalSubCircuit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	max := new(big.Int).Sub(MODULUS, big.NewInt(1))
+	values := []*big.Int{big.NewInt(0), big.NewInt(1), big.NewInt(2), max}
+	for _, a := range values {
+		for _, b := range values {
+			difference := new(big.Int).Mod(new(big.Int).Sub(a, b), MODULUS)
+			w, err := frontend.NewWitness(&canonicalSubCircuit{A: a, B: b, Difference: difference}, ecc.BN254.ScalarField())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ccs.IsSolved(w); err != nil {
+				t.Errorf("%s - %s: %v", a, b, err)
+			}
+		}
+	}
+	w, err := frontend.NewWitness(&canonicalSubCircuit{A: 0, B: 1, Difference: 0}, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ccs.IsSolved(w); err == nil {
+		t.Fatal("accepted an incorrect modular difference")
+	}
+}
+
+func TestCanonicalSubGroth16(t *testing.T) {
+	cs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &canonicalSubCircuit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs.GetCommitments().CommitmentIndexes()) != 0 {
+		t.Fatal("unexpected commitment")
+	}
+	w, err := frontend.NewWitness(&canonicalSubCircuit{A: 0, B: 1, Difference: new(big.Int).Sub(MODULUS, big.NewInt(1))}, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk, vk, err := groth16.Setup(cs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := groth16.Prove(cs, pk, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := w.Public()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := groth16.Verify(proof, vk, public); err != nil {
+		t.Fatal(err)
 	}
 }
 

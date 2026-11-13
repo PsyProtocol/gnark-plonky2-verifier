@@ -53,6 +53,7 @@ var EXPECTED_OPTIMAL_BASEWIDTH int = 16
 // Registers the hint functions with the solver.
 func init() {
 	solver.RegisterHint(MulAddHint)
+	solver.RegisterHint(SubHint)
 	solver.RegisterHint(ReduceHint)
 	solver.RegisterHint(InverseHint)
 	solver.RegisterHint(SplitLimbsHint)
@@ -180,7 +181,37 @@ func (p *Chip) AddNoReduce(a Variable, b Variable) Variable {
 
 // Subracts two goldilocks field elements and returns a value within the goldilocks field.
 func (p *Chip) Sub(a Variable, b Variable) Variable {
-	return p.MulAdd(b, NegOne(), a)
+	// For canonical operands, a-b is in (−p,p), so a single bit selects
+	// whether p must be added to obtain the canonical difference.
+	result, err := p.api.Compiler().NewHint(SubHint, 2, a.Limb, b.Limb)
+	if err != nil {
+		panic(err)
+	}
+	borrow, remainder := result[0], NewVariable(result[1])
+	p.api.AssertIsBoolean(borrow)
+	p.RangeCheck(remainder)
+	p.api.AssertIsEqual(p.api.Add(a.Limb, p.api.Mul(borrow, MODULUS)), p.api.Add(b.Limb, remainder.Limb))
+	return remainder
+}
+
+// SubHint returns the borrow bit and canonical difference for canonical inputs.
+func SubHint(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
+	if len(inputs) != 2 || len(results) != 2 {
+		return fmt.Errorf("SubHint expects two inputs and two outputs")
+	}
+	for _, operand := range inputs {
+		if operand.Sign() < 0 || operand.Cmp(MODULUS) >= 0 {
+			return fmt.Errorf("%s is not in the field", operand.String())
+		}
+	}
+	results[1].Sub(inputs[0], inputs[1])
+	if results[1].Sign() < 0 {
+		results[0].SetUint64(1)
+		results[1].Add(results[1], MODULUS)
+	} else {
+		results[0].SetUint64(0)
+	}
+	return nil
 }
 
 // Subracts two goldilocks field elements and returns a value that may not be within the goldilocks field
