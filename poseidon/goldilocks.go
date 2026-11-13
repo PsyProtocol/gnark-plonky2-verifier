@@ -263,21 +263,63 @@ func (c *GoldilocksChip) reduceMdsState(state GoldilocksState) GoldilocksState {
 }
 
 func (c *GoldilocksChip) MdsRowShfExtension(r int, v GoldilocksStateExtension) gl.QuadraticExtensionVariable {
-	res := gl.ZeroExtension()
+	validateExtensionMdsCoefficients()
+	c.checkExtensionState(v)
+	return c.mdsRowShfExtensionChecked(r, v)
+}
 
-	for i := 0; i < 12; i++ {
-		if i < SPONGE_WIDTH {
-			matrixVal := gl.NewVariable(MDS_MATRIX_CIRC[i])
-			matrixValQE := gl.NewQuadraticExtensionVariable(matrixVal, gl.Zero())
-			res1 := c.gl.MulExtension(v[(i+r)%SPONGE_WIDTH], matrixValQE)
-			res = c.gl.AddExtension(res, res1)
+// Extension MDS rows are two independent base-field linear combinations.
+// The checked inputs are canonical and the coefficients sum to at most 264,
+// so each quotient is below 264 and fits in 16 bits.
+func (c *GoldilocksChip) mdsRowShfExtensionChecked(r int, v GoldilocksStateExtension) gl.QuadraticExtensionVariable {
+	a, b := gl.Zero(), gl.Zero()
+	for i := 0; i < SPONGE_WIDTH; i++ {
+		coefficient := gl.NewVariable(MDS_MATRIX_CIRC[i])
+		a = c.gl.MulAddNoReduce(v[(i+r)%SPONGE_WIDTH][0], coefficient, a)
+		b = c.gl.MulAddNoReduce(v[(i+r)%SPONGE_WIDTH][1], coefficient, b)
+	}
+	coefficient := gl.NewVariable(MDS_MATRIX_DIAG[r])
+	a = c.gl.MulAddNoReduce(v[r][0], coefficient, a)
+	b = c.gl.MulAddNoReduce(v[r][1], coefficient, b)
+	return gl.NewQuadraticExtensionVariable(c.gl.ReduceWithMaxBits(a, 16), c.gl.ReduceWithMaxBits(b, 16))
+}
+
+func validateExtensionMdsCoefficients() {
+	if SPONGE_WIDTH != 12 || len(MDS_MATRIX_CIRC) != SPONGE_WIDTH || len(MDS_MATRIX_DIAG) != SPONGE_WIDTH {
+		panic("unexpected extension Poseidon MDS shape")
+	}
+	var sum uint64
+	for _, value := range MDS_MATRIX_CIRC {
+		n, ok := value.(uint64)
+		if !ok || n > 264 || sum > 264-n {
+			panic("extension Poseidon MDS coefficient exceeds bound")
+		}
+		sum += n
+	}
+	for _, value := range MDS_MATRIX_DIAG {
+		n, ok := value.(uint64)
+		if !ok || n > 264-sum {
+			panic("extension Poseidon MDS diagonal exceeds bound")
 		}
 	}
+}
 
-	matrixVal := gl.NewVariable(MDS_MATRIX_DIAG[r])
-	matrixValQE := gl.NewQuadraticExtensionVariable(matrixVal, gl.Zero())
-	res = c.gl.AddExtension(res, c.gl.MulExtension(v[r], matrixValQE))
-	return res
+func (c *GoldilocksChip) checkExtensionState(state GoldilocksStateExtension) {
+	// An 80-bit quotient times p is below 2^144, including an adversarial
+	// witness. The partial matrices use only width-12 uint64 coefficients.
+	if SPONGE_WIDTH != 12 || c.api.Compiler().FieldBitLen() < 145 {
+		panic("extension Poseidon MDS requires width 12 and a host field larger than 2^144")
+	}
+	for _, value := range state {
+		c.gl.RangeCheckQE(value)
+	}
+}
+
+func extensionMatrixCoefficient(value frontend.Variable) gl.Variable {
+	if _, ok := value.(uint64); !ok {
+		panic("extension Poseidon MDS coefficient must be uint64")
+	}
+	return gl.NewVariable(value)
 }
 
 func (c *GoldilocksChip) mdsLayer(state_ GoldilocksState) GoldilocksState {
@@ -296,11 +338,13 @@ func (c *GoldilocksChip) mdsLayer(state_ GoldilocksState) GoldilocksState {
 }
 
 func (c *GoldilocksChip) MdsLayerExtension(state_ GoldilocksStateExtension) GoldilocksStateExtension {
+	validateExtensionMdsCoefficients()
+	c.checkExtensionState(state_)
 	var result GoldilocksStateExtension
 
 	for r := 0; r < 12; r++ {
 		if r < SPONGE_WIDTH {
-			sum := c.MdsRowShfExtension(r, state_)
+			sum := c.mdsRowShfExtensionChecked(r, state_)
 			result[r] = sum
 		}
 	}
@@ -357,23 +401,19 @@ func (c *GoldilocksChip) mdsPartialLayerInit(state GoldilocksState) GoldilocksSt
 }
 
 func (c *GoldilocksChip) MdsPartialLayerInitExtension(state GoldilocksStateExtension) GoldilocksStateExtension {
+	c.checkExtensionState(state)
 	var result GoldilocksStateExtension
-	for i := 0; i < 12; i++ {
-		result[i] = gl.ZeroExtension()
-	}
-
 	result[0] = state[0]
-
-	for r := 1; r < 12; r++ {
-		if r < SPONGE_WIDTH {
-			for d := 1; d < 12; d++ {
-				if d < SPONGE_WIDTH {
-					t := gl.NewVariable(FAST_PARTIAL_ROUND_INITIAL_MATRIX[r-1][d-1])
-					tQE := gl.NewQuadraticExtensionVariable(t, gl.Zero())
-					result[d] = c.gl.AddExtension(result[d], c.gl.MulExtension(state[r], tQE))
-				}
-			}
+	// Each coefficient sum has 11 products below p*2^64; its quotient is
+	// below 11*2^64, which fits in 80 bits.
+	for d := 1; d < SPONGE_WIDTH; d++ {
+		a, b := gl.Zero(), gl.Zero()
+		for r := 1; r < SPONGE_WIDTH; r++ {
+			coefficient := extensionMatrixCoefficient(FAST_PARTIAL_ROUND_INITIAL_MATRIX[r-1][d-1])
+			a = c.gl.MulAddNoReduce(state[r][0], coefficient, a)
+			b = c.gl.MulAddNoReduce(state[r][1], coefficient, b)
 		}
+		result[d] = gl.NewQuadraticExtensionVariable(c.gl.ReduceWithMaxBits(a, 80), c.gl.ReduceWithMaxBits(b, 80))
 	}
 
 	return result
@@ -421,26 +461,25 @@ func (c *GoldilocksChip) mdsPartialLayerFast(state GoldilocksState, r int) Goldi
 }
 
 func (c *GoldilocksChip) MdsPartialLayerFastExtension(state GoldilocksStateExtension, r int) GoldilocksStateExtension {
-	s0 := state[0]
-	mds0to0 := gl.NewVariable(MDS0TO0)
-	mds0to0QE := gl.NewQuadraticExtensionVariable(mds0to0, gl.Zero())
-	d := c.gl.MulExtension(s0, mds0to0QE)
-	for i := 1; i < 12; i++ {
-		if i < SPONGE_WIDTH {
-			t := gl.NewVariable(FAST_PARTIAL_ROUND_W_HATS[r][i-1])
-			tQE := gl.NewQuadraticExtensionVariable(t, gl.Zero())
-			d = c.gl.AddExtension(d, c.gl.MulExtension(state[i], tQE))
-		}
+	c.checkExtensionState(state)
+	// The first lane sums 12 products below p*2^64. Each remaining lane
+	// is a single such product plus a canonical field element.
+	a, b := gl.Zero(), gl.Zero()
+	for i := 1; i < SPONGE_WIDTH; i++ {
+		coefficient := extensionMatrixCoefficient(FAST_PARTIAL_ROUND_W_HATS[r][i-1])
+		a = c.gl.MulAddNoReduce(state[i][0], coefficient, a)
+		b = c.gl.MulAddNoReduce(state[i][1], coefficient, b)
 	}
-
+	coefficient := extensionMatrixCoefficient(MDS0TO0)
+	a = c.gl.MulAddNoReduce(state[0][0], coefficient, a)
+	b = c.gl.MulAddNoReduce(state[0][1], coefficient, b)
 	var result GoldilocksStateExtension
-	result[0] = d
-	for i := 1; i < 12; i++ {
-		if i < SPONGE_WIDTH {
-			t := gl.NewVariable(FAST_PARTIAL_ROUND_VS[r][i-1])
-			tQE := gl.NewQuadraticExtensionVariable(t, gl.Zero())
-			result[i] = c.gl.AddExtension(c.gl.MulExtension(state[0], tQE), state[i])
-		}
+	result[0] = gl.NewQuadraticExtensionVariable(c.gl.ReduceWithMaxBits(a, 80), c.gl.ReduceWithMaxBits(b, 80))
+	for i := 1; i < SPONGE_WIDTH; i++ {
+		coefficient = extensionMatrixCoefficient(FAST_PARTIAL_ROUND_VS[r][i-1])
+		a = c.gl.MulAddNoReduce(state[0][0], coefficient, state[i][0])
+		b = c.gl.MulAddNoReduce(state[0][1], coefficient, state[i][1])
+		result[i] = gl.NewQuadraticExtensionVariable(c.gl.ReduceWithMaxBits(a, 80), c.gl.ReduceWithMaxBits(b, 80))
 	}
 
 	return result

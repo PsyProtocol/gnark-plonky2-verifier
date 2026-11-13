@@ -4,14 +4,14 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
-	"github.com/consensys/gnark-crypto/field/goldilocks"
-	"github.com/zilong-dai/gnark/frontend"
-	"github.com/zilong-dai/gnark/test"
 	gl "github.com/cf/gnark-plonky2-verifier/goldilocks"
 	"github.com/cf/gnark-plonky2-verifier/plonk/gates"
 	"github.com/cf/gnark-plonky2-verifier/poseidon"
 	"github.com/cf/gnark-plonky2-verifier/types"
+	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark-crypto/field/goldilocks"
+	"github.com/zilong-dai/gnark/frontend"
+	"github.com/zilong-dai/gnark/test"
 )
 
 // From recursive_step circuit
@@ -707,6 +707,15 @@ func (circuit *TestGateCircuit) Define(api frontend.API) error {
 	}
 
 	return nil
+}
+
+func TestPoseidonGateVectorBN254(t *testing.T) {
+	// Match the production range-check strategy when using gnark's test engine.
+	t.Setenv("USE_BIT_DECOMPOSITION_RANGE_CHECK", "true")
+	circuit := &TestGateCircuit{testGate: gates.NewPoseidonGate(), ExpectedConstraints: poseidonGateExpectedConstraints}
+	witness := &TestGateCircuit{testGate: gates.NewPoseidonGate(), ExpectedConstraints: poseidonGateExpectedConstraints}
+	err := test.IsSolved(circuit, witness, ecc.BN254.ScalarField())
+	test.NewAssert(t).NoError(err)
 }
 
 func TestGates(t *testing.T) {
