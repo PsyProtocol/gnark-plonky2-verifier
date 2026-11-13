@@ -108,12 +108,13 @@ func (c *GoldilocksChip) partialRounds(state GoldilocksState, roundCounter *int)
 
 	for i := 0; i < N_PARTIAL_ROUNDS; i++ {
 		state[0] = c.sBoxMonomial(state[0])
-		state[0] = c.gl.Add(state[0], gl.NewVariable(FAST_PARTIAL_ROUND_CONSTANTS[i]))
+		state[0] = c.gl.AddNoReduce(state[0], canonicalRoundConstant(FAST_PARTIAL_ROUND_CONSTANTS[i]))
 		state = c.mdsPartialLayerFast(state, i)
 	}
 
-	// Lanes 1..11 start canonical and gain at most 22 products of two
-	// uint64-sized values; each is below 2^133 and its quotient is <2^70.
+	// Lanes 1..11 start canonical and gain at most 22 products of a value
+	// below 2p and a uint64 coefficient. Each stays below 2^134, with a
+	// quotient below 2^71.
 	for i := 1; i < SPONGE_WIDTH; i++ {
 		state[i] = c.gl.ReduceWithMaxBits(state[i], 80)
 	}
@@ -127,10 +128,19 @@ func (c *GoldilocksChip) constantLayer(state GoldilocksState, roundCounter *int)
 	for i := 0; i < 12; i++ {
 		if i < SPONGE_WIDTH {
 			roundConstant := ALL_ROUND_CONSTANTS[i+SPONGE_WIDTH*(*roundCounter)]
-			state[i] = c.gl.Add(state[i], gl.NewVariable(roundConstant))
+			state[i] = c.gl.AddNoReduce(state[i], canonicalRoundConstant(roundConstant))
 		}
 	}
 	return state
+}
+
+// The lazy reductions below rely on every round constant being canonical.
+func canonicalRoundConstant(v frontend.Variable) gl.Variable {
+	constant, ok := v.(uint64)
+	if !ok || constant >= gl.MODULUS.Uint64() {
+		panic("Poseidon round constant must be a canonical uint64")
+	}
+	return gl.NewVariable(constant)
 }
 
 func (c *GoldilocksChip) ConstantLayerExtension(state GoldilocksStateExtension, roundCounter *int) GoldilocksStateExtension {
@@ -145,17 +155,28 @@ func (c *GoldilocksChip) ConstantLayerExtension(state GoldilocksStateExtension, 
 }
 
 func (c *GoldilocksChip) sBoxMonomial(x gl.Variable) gl.Variable {
-	// The S-box input and each reduced intermediate are canonical Goldilocks
-	// elements. Each unreduced product is therefore less than p^3, so its
-	// quotient by p is less than p^2 < 2^128. Keep the bound aligned to 16
-	// bits for the commitment-based range checker as well.
-	const quotientBits = 128
+	// x is a canonical state element plus a canonical round constant, so
+	// x < 2p. The x^3 quotient is < 8p^2 < 2^131. After reducing x^3,
+	// the x^7 quotient is < 2p^2 < 2^129. Both relations fit below 2^195,
+	// including for an adversarial witness. The wider commitment-checker
+	// bounds below require a host field larger than 2^208.
+	if c.api.Compiler().FieldBitLen() < 209 {
+		panic("Poseidon S-box bounds require a host field larger than 2^208")
+	}
+	x3Bits, x7Bits := uint64(131), uint64(129)
+	// The commitment range checker requires widths aligned to its 16-bit
+	// base. The wider bounds still keep the equations below the host field.
+	if _, native := c.api.(frontend.Rangechecker); !native {
+		if _, committer := c.api.(frontend.Committer); committer {
+			x3Bits, x7Bits = 144, 144
+		}
+	}
 	x2 := c.gl.MulNoReduce(x, x)
 	x3 := c.gl.MulNoReduce(x, x2)
-	x3 = c.gl.ReduceWithMaxBits(x3, quotientBits)
+	x3 = c.gl.ReduceWithMaxBits(x3, x3Bits)
 	x6 := c.gl.MulNoReduce(x3, x3)
 	x7 := c.gl.MulNoReduce(x, x6)
-	return c.gl.ReduceWithMaxBits(x7, quotientBits)
+	return c.gl.ReduceWithMaxBits(x7, x7Bits)
 }
 
 func (c *GoldilocksChip) SBoxMonomialExtension(x gl.QuadraticExtensionVariable) gl.QuadraticExtensionVariable {
@@ -247,7 +268,7 @@ func (c *GoldilocksChip) MdsLayerExtension(state_ GoldilocksStateExtension) Gold
 func (c *GoldilocksChip) partialFirstConstantLayer(state GoldilocksState) GoldilocksState {
 	for i := 0; i < 12; i++ {
 		if i < SPONGE_WIDTH {
-			state[i] = c.gl.Add(state[i], gl.NewVariable(FAST_PARTIAL_FIRST_ROUND_CONSTANT[i]))
+			state[i] = c.gl.AddNoReduce(state[i], canonicalRoundConstant(FAST_PARTIAL_FIRST_ROUND_CONSTANT[i]))
 		}
 	}
 	return state
@@ -283,9 +304,8 @@ func (c *GoldilocksChip) mdsPartialLayerInit(state GoldilocksState) GoldilocksSt
 		}
 	}
 
-	// result[0] is already a canonical state element. Each other entry is a
-	// sum of 11 products of canonical elements and uint64 constants; its
-	// quotient is less than 11 * 2^64 < 2^80.
+	// result[0] is below 2p. Each other entry is a sum of 11 products of
+	// elements below 2p and uint64 constants; its quotient is below 2^69.
 	for i := 1; i < 12; i++ {
 		result[i] = c.gl.ReduceWithMaxBits(result[i], 80)
 	}
@@ -332,8 +352,8 @@ func (c *GoldilocksChip) mdsPartialLayerFast(state GoldilocksState, r int) Goldi
 		panic("lazy partial-round diagonal must be a uint64 constant")
 	}
 	d := c.gl.MulAddNoReduce(state[0], gl.NewVariable(MDS0TO0_VAR), dSum)
-	// The 11 lazy lanes are each <2^133, and each coefficient is <2^64.
-	// The sum is <2^201, so the quotient is <2^138 and no host-field
+	// The 11 lazy lanes are each <2^134, and each coefficient is <2^64.
+	// The sum is <2^202, so the quotient is <2^139 and no host-field
 	// wraparound is possible (including quotient * Goldilocks modulus).
 	d = c.gl.ReduceWithMaxBits(d, 144)
 
