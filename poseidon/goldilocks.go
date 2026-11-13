@@ -30,10 +30,10 @@ func NewGoldilocksChip(api frontend.API) *GoldilocksChip {
 func (c *GoldilocksChip) Poseidon(input GoldilocksState) GoldilocksState {
 	state := input
 	roundCounter := 0
-	state = c.fullRounds(state, &roundCounter)
+	state = c.fullRoundsLazy(state, &roundCounter)
 	state = c.partialRounds(state, &roundCounter)
-	state = c.fullRounds(state, &roundCounter)
-	return state
+	state = c.fullRoundsLazy(state, &roundCounter)
+	return c.reduceMdsState(state)
 }
 
 // The input elements MUST have all it's elements be within Goldilocks field.
@@ -90,18 +90,23 @@ func (c *GoldilocksChip) ToVec(hash GoldilocksHashOut) []gl.Variable {
 }
 
 func (c *GoldilocksChip) fullRounds(state GoldilocksState, roundCounter *int) GoldilocksState {
+	return c.reduceMdsState(c.fullRoundsLazy(state, roundCounter))
+}
+
+func (c *GoldilocksChip) fullRoundsLazy(state GoldilocksState, roundCounter *int) GoldilocksState {
+	validateMdsCoefficients()
 	for i := 0; i < HALF_N_FULL_ROUNDS; i++ {
 		state = c.constantLayer(state, roundCounter)
 		state = c.sBoxLayer(state)
-		state = c.mdsLayer(state)
+		state = c.mdsLayerLazy(state)
 		*roundCounter += 1
 	}
 	return state
 }
 
 func (c *GoldilocksChip) partialRounds(state GoldilocksState, roundCounter *int) GoldilocksState {
-	if SPONGE_WIDTH != 12 || N_PARTIAL_ROUNDS != 22 || c.api.Compiler().FieldBitLen() < 209 {
-		panic("lazy partial-round bounds require width 12, 22 rounds and a host field larger than 2^208")
+	if SPONGE_WIDTH != 12 || N_PARTIAL_ROUNDS != 22 || c.api.Compiler().FieldBitLen() < 225 {
+		panic("lazy Poseidon bounds require width 12, 22 rounds and a host field larger than 2^224")
 	}
 	state = c.partialFirstConstantLayer(state)
 	state = c.mdsPartialLayerInit(state)
@@ -155,20 +160,19 @@ func (c *GoldilocksChip) ConstantLayerExtension(state GoldilocksStateExtension, 
 }
 
 func (c *GoldilocksChip) sBoxMonomial(x gl.Variable) gl.Variable {
-	// x is a canonical state element plus a canonical round constant, so
-	// x < 2p. The x^3 quotient is < 8p^2 < 2^131. After reducing x^3,
-	// the x^7 quotient is < 2p^2 < 2^129. Both relations fit below 2^195,
-	// including for an adversarial witness. The wider commitment-checker
-	// bounds below require a host field larger than 2^208.
-	if c.api.Compiler().FieldBitLen() < 209 {
-		panic("Poseidon S-box bounds require a host field larger than 2^208")
+	// A lazy MDS row is below 264p; adding a canonical constant gives x <
+	// 265p. The x^3 quotient is < 265^3*p^2 < 2^153. After reducing x^3,
+	// the x^7 quotient is < 265*p^2 < 2^137. The commitment-checker bounds
+	// below require a host field larger than 2^224.
+	if c.api.Compiler().FieldBitLen() < 225 {
+		panic("Poseidon S-box bounds require a host field larger than 2^224")
 	}
-	x3Bits, x7Bits := uint64(131), uint64(129)
+	x3Bits, x7Bits := uint64(153), uint64(137)
 	// The commitment range checker requires widths aligned to its 16-bit
 	// base. The wider bounds still keep the equations below the host field.
 	if _, native := c.api.(frontend.Rangechecker); !native {
 		if _, committer := c.api.(frontend.Committer); committer {
-			x3Bits, x7Bits = 144, 144
+			x3Bits, x7Bits = 160, 144
 		}
 	}
 	x2 := c.gl.MulNoReduce(x, x)
@@ -205,6 +209,10 @@ func (c *GoldilocksChip) SBoxLayerExtension(state GoldilocksStateExtension) Gold
 }
 
 func (c *GoldilocksChip) mdsRowShf(r int, v GoldilocksState) gl.Variable {
+	return c.gl.ReduceWithMaxBits(c.mdsRowShfLazy(r, v), 16)
+}
+
+func (c *GoldilocksChip) mdsRowShfLazy(r int, v GoldilocksState) gl.Variable {
 	res := gl.Zero()
 
 	for i := 0; i < 12; i++ {
@@ -214,9 +222,44 @@ func (c *GoldilocksChip) mdsRowShf(r int, v GoldilocksState) gl.Variable {
 	}
 
 	res = c.gl.MulAddNoReduce(v[r], gl.NewVariable(MDS_MATRIX_DIAG_VARS[r]), res)
-	// All state elements are canonical and the sum of these matrix
-	// coefficients is at most 264, so the quotient is less than 2^16.
-	return c.gl.ReduceWithMaxBits(res, 16)
+	return res
+}
+
+// Every full-round MDS input is canonical. Each lazy output is therefore
+// below 264p, including the diagonal term; validate this compile-time bound.
+func validateMdsCoefficients() {
+	if SPONGE_WIDTH != 12 || len(MDS_MATRIX_CIRC_VARS) != SPONGE_WIDTH || len(MDS_MATRIX_DIAG_VARS) != SPONGE_WIDTH {
+		panic("unexpected Poseidon MDS shape")
+	}
+	var sum uint64
+	for _, v := range MDS_MATRIX_CIRC_VARS {
+		n, ok := v.(uint64)
+		if !ok || n > 264 || sum > 264-n {
+			panic("Poseidon MDS coefficient exceeds lazy bound")
+		}
+		sum += n
+	}
+	for _, v := range MDS_MATRIX_DIAG_VARS {
+		n, ok := v.(uint64)
+		if !ok || n > 264-sum {
+			panic("Poseidon MDS diagonal exceeds lazy bound")
+		}
+	}
+}
+
+func (c *GoldilocksChip) mdsLayerLazy(state GoldilocksState) GoldilocksState {
+	var result GoldilocksState
+	for i := range result {
+		result[i] = c.mdsRowShfLazy(i, state)
+	}
+	return result
+}
+
+func (c *GoldilocksChip) reduceMdsState(state GoldilocksState) GoldilocksState {
+	for i := range state {
+		state[i] = c.gl.ReduceWithMaxBits(state[i], 16)
+	}
+	return state
 }
 
 func (c *GoldilocksChip) MdsRowShfExtension(r int, v GoldilocksStateExtension) gl.QuadraticExtensionVariable {
@@ -304,8 +347,8 @@ func (c *GoldilocksChip) mdsPartialLayerInit(state GoldilocksState) GoldilocksSt
 		}
 	}
 
-	// result[0] is below 2p. Each other entry is a sum of 11 products of
-	// elements below 2p and uint64 constants; its quotient is below 2^69.
+	// result[0] is below 265p. Each other entry is a sum of 11 products of
+	// elements below 265p and uint64 constants; its quotient is below 2^76.
 	for i := 1; i < 12; i++ {
 		result[i] = c.gl.ReduceWithMaxBits(result[i], 80)
 	}

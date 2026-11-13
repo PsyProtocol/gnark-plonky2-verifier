@@ -34,19 +34,44 @@ func (c *fusedComparison) Define(api frontend.API) error {
 
 func TestFusedPoseidonBounds(t *testing.T) {
 	p := new(big.Int).Set(gl.MODULUS)
-	inputMax := new(big.Int).Sub(new(big.Int).Mul(p, big.NewInt(2)), big.NewInt(2))
+	inputMax := new(big.Int).Sub(new(big.Int).Mul(p, big.NewInt(265)), big.NewInt(1))
 	cubicMax := new(big.Int).Exp(inputMax, big.NewInt(3), nil)
 	q3 := new(big.Int).Div(new(big.Int).Set(cubicMax), p)
 	canonicalMax := new(big.Int).Sub(p, big.NewInt(1))
 	seventhMax := new(big.Int).Mul(inputMax, new(big.Int).Mul(canonicalMax, canonicalMax))
 	q7 := new(big.Int).Div(new(big.Int).Set(seventhMax), p)
-	if q3.BitLen() > 131 || q7.BitLen() > 129 {
+	if q3.BitLen() > 153 || q7.BitLen() > 137 {
 		t.Fatalf("S-box quotient bounds: x^3=%d bits, x^7=%d bits", q3.BitLen(), q7.BitLen())
 	}
 	host := ecc.BN254.ScalarField()
 	if cubicMax.Cmp(host) >= 0 || seventhMax.Cmp(host) >= 0 {
 		t.Fatal("S-box integer products exceed the host field")
 	}
+	// Even the padded commitment-checker quotient must not wrap the host.
+	paddedMax := new(big.Int).Mul(new(big.Int).Lsh(big.NewInt(1), 160), p)
+	if paddedMax.Cmp(host) >= 0 {
+		t.Fatal("padded S-box quotient can wrap the host field")
+	}
+	// The partial-round initial matrix combines 11 inputs below 265p
+	// against uint64 coefficients; their quotient must fit in 80 bits.
+	coefficientMax := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 64), big.NewInt(1))
+	initialMax := new(big.Int).Mul(inputMax, coefficientMax)
+	initialMax.Mul(initialMax, big.NewInt(11))
+	if new(big.Int).Div(new(big.Int).Set(initialMax), p).BitLen() > 80 || initialMax.Cmp(host) >= 0 {
+		t.Fatal("partial-round initial matrix exceeds its bound")
+	}
+}
+
+func TestLazyMdsCoefficientGuard(t *testing.T) {
+	old := MDS_MATRIX_CIRC_VARS[0]
+	defer func() { MDS_MATRIX_CIRC_VARS[0] = old }()
+	MDS_MATRIX_CIRC_VARS[0] = uint64(265)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("accepted an MDS coefficient outside the lazy bound")
+		}
+	}()
+	validateMdsCoefficients()
 }
 func TestFusedCompare(t *testing.T) {
 	cs, e := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &fusedComparison{})

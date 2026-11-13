@@ -149,20 +149,8 @@ func (c *VerifierChip) rangeCheckProof(proof variables.Proof) {
 		c.glChip.RangeCheckQE(quotientPoly)
 	}
 
-	// Range check the openings proof.
-	for _, queryRound := range proof.OpeningProof.QueryRoundProofs {
-		for _, evalsProof := range queryRound.InitialTreesProof.EvalsProofs {
-			for _, evalsProofElement := range evalsProof.Elements {
-				c.glChip.RangeCheck(evalsProofElement)
-			}
-		}
-
-		for _, queryStep := range queryRound.Steps {
-			for _, eval := range queryStep.Evals {
-				c.glChip.RangeCheckQE(eval)
-			}
-		}
-	}
+	// FRI query evaluations are checked inside VerifyFriProof, so its
+	// independent callers receive the same checks without duplicating them.
 
 	// Range check the fri's final poly.
 	for _, coeff := range proof.OpeningProof.FinalPoly.Coeffs {

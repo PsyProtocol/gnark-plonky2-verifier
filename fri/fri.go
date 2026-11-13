@@ -227,6 +227,10 @@ func (f *Chip) precomputeAlphaPowers(alpha gl.QuadraticExtensionVariable, maxExp
 // canonical; each product is <p^2 and the partial sum is <2^13*p^2+p.
 // Consequently the quotient is <2^77, and a bound of 80 bits suffices.
 func (f *Chip) reduceBaseWithPowers(evals []gl.Variable, powers []gl.QuadraticExtensionVariable) gl.QuadraticExtensionVariable {
+	return f.reduceBaseWithPowersChecked(evals, powers, false)
+}
+
+func (f *Chip) reduceBaseWithPowersChecked(evals []gl.Variable, powers []gl.QuadraticExtensionVariable, checked bool) gl.QuadraticExtensionVariable {
 	if len(powers) < len(evals) {
 		panic("not enough alpha powers")
 	}
@@ -234,7 +238,9 @@ func (f *Chip) reduceBaseWithPowers(evals []gl.Variable, powers []gl.QuadraticEx
 	accum := gl.ZeroExtension()
 	pending := 0
 	for i, eval := range evals {
-		f.gl.RangeCheck(eval)
+		if !checked {
+			f.gl.RangeCheck(eval)
+		}
 		accum[0] = f.gl.MulAddNoReduce(eval, powers[i][0], accum[0])
 		accum[1] = f.gl.MulAddNoReduce(eval, powers[i][1], accum[1])
 		pending++
@@ -256,6 +262,17 @@ func (f *Chip) friCombineInitial(
 	precomputedReducedEval []gl.QuadraticExtensionVariable,
 	precomputedAlphaPowers []gl.QuadraticExtensionVariable,
 ) gl.QuadraticExtensionVariable {
+	return f.friCombineInitialChecked(instance, proof, subgroupX_QE, precomputedReducedEval, precomputedAlphaPowers, false)
+}
+
+func (f *Chip) friCombineInitialChecked(
+	instance InstanceInfo,
+	proof variables.FriInitialTreeProof,
+	subgroupX_QE gl.QuadraticExtensionVariable,
+	precomputedReducedEval []gl.QuadraticExtensionVariable,
+	precomputedAlphaPowers []gl.QuadraticExtensionVariable,
+	checked bool,
+) gl.QuadraticExtensionVariable {
 	sum := gl.ZeroExtension()
 
 	if len(instance.Batches) != len(precomputedReducedEval) {
@@ -274,7 +291,7 @@ func (f *Chip) friCombineInitial(
 		if len(precomputedAlphaPowers) <= len(evals) {
 			panic("not enough alpha powers")
 		}
-		reducedEvals := f.reduceBaseWithPowers(evals, precomputedAlphaPowers)
+		reducedEvals := f.reduceBaseWithPowersChecked(evals, precomputedAlphaPowers, checked)
 		numerator := f.gl.SubExtensionNoReduce(reducedEvals, reducedOpenings)
 		denominator := f.gl.SubExtension(subgroupX_QE, point)
 		sum = f.gl.MulExtension(precomputedAlphaPowers[len(evals)], sum)
@@ -298,19 +315,22 @@ func (f *Chip) finalPolyEval(finalPoly variables.PolynomialCoeffs, point gl.Quad
 	return ret
 }
 
-func (f *Chip) interpolate(
+func (f *Chip) interpolateChecked(
 	x gl.QuadraticExtensionVariable,
 	xPoints []gl.QuadraticExtensionVariable,
 	yPoints []gl.QuadraticExtensionVariable,
 	barycentricWeights []gl.QuadraticExtensionVariable,
+	checked bool,
 ) gl.QuadraticExtensionVariable {
 	if len(xPoints) != len(yPoints) || len(xPoints) != len(barycentricWeights) {
 		panic("length of xPoints, yPoints, and barycentricWeights are inconsistent")
 	}
 	// Each y value comes from the proof. Constrain it even when the
 	// verifier-wide rangeCheckProof call is disabled.
-	for _, y := range yPoints {
-		f.gl.RangeCheckQE(y)
+	if !checked {
+		for _, y := range yPoints {
+			f.gl.RangeCheckQE(y)
+		}
 	}
 	// Prefix products P[i] = product_{j<i} (x-x_j).
 	n := len(xPoints)
@@ -343,6 +363,17 @@ func (f *Chip) computeEvaluation(
 	arityBits uint64,
 	evals []gl.QuadraticExtensionVariable,
 	beta gl.QuadraticExtensionVariable,
+) gl.QuadraticExtensionVariable {
+	return f.computeEvaluationChecked(x, xIndexWithinCosetBits, arityBits, evals, beta, false)
+}
+
+func (f *Chip) computeEvaluationChecked(
+	x gl.Variable,
+	xIndexWithinCosetBits []frontend.Variable,
+	arityBits uint64,
+	evals []gl.QuadraticExtensionVariable,
+	beta gl.QuadraticExtensionVariable,
+	checked bool,
 ) gl.QuadraticExtensionVariable {
 	arity := 1 << arityBits
 	if (len(evals)) != arity {
@@ -409,7 +440,7 @@ func (f *Chip) computeEvaluation(
 		}
 	}
 
-	return f.interpolate(beta, xPoints, yPoints, barycentricWeights)
+	return f.interpolateChecked(beta, xPoints, yPoints, barycentricWeights, checked)
 }
 
 func (f *Chip) verifyQueryRound(
@@ -438,12 +469,13 @@ func (f *Chip) verifyQueryRound(
 	)
 	subgroupX_QE := subgroupX.ToQuadraticExtension()
 
-	oldEval := f.friCombineInitial(
+	oldEval := f.friCombineInitialChecked(
 		instance,
 		roundProof.InitialTreesProof,
 		subgroupX_QE,
 		precomputedReducedEval,
 		precomputedAlphaPowers,
+		true,
 	)
 
 	for i, arityBits := range f.friParams.ReductionArityBits {
@@ -487,12 +519,13 @@ func (f *Chip) verifyQueryRound(
 		f.gl.AssertIsEqual(newEval[0], oldEval[0])
 		f.gl.AssertIsEqual(newEval[1], oldEval[1])
 
-		oldEval = f.computeEvaluation(
+		oldEval = f.computeEvaluationChecked(
 			subgroupX,
 			xIndexWithinCosetBits,
 			arityBits,
 			evals,
 			challenges.FriBetas[i],
+			true,
 		)
 
 		// Convert evals (array of QE) to fields by taking their 0th degree coefficients
@@ -534,6 +567,11 @@ func (f *Chip) VerifyFriProof(
 ) {
 	// Not adding any constraints but a sanity check on the proof shape matching the friParams (constant).
 	validateFriProofShape(friProof, instance, f.friParams)
+
+	// All query evaluations are constrained once here, before the checked
+	// helpers use them. This also covers unused oracle elements which are
+	// still included in Merkle leaves.
+	f.rangeCheckQueryEvaluations(friProof)
 
 	// Check POW
 	f.assertLeadingZeros(friChallenges.FriPowResponse, f.friParams.Config)
@@ -587,5 +625,20 @@ func (f *Chip) VerifyFriProof(
 			nLog,
 			&roundProof,
 		)
+	}
+}
+
+func (f *Chip) rangeCheckQueryEvaluations(proof *variables.FriProof) {
+	for _, round := range proof.QueryRoundProofs {
+		for _, oracle := range round.InitialTreesProof.EvalsProofs {
+			for _, eval := range oracle.Elements {
+				f.gl.RangeCheck(eval)
+			}
+		}
+		for _, step := range round.Steps {
+			for _, eval := range step.Evals {
+				f.gl.RangeCheckQE(eval)
+			}
+		}
 	}
 }
