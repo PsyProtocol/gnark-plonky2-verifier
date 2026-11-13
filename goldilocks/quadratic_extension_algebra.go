@@ -51,26 +51,31 @@ func (p *Chip) MulExtensionAlgebra(
 	a QuadraticExtensionAlgebraVariable,
 	b QuadraticExtensionAlgebraVariable,
 ) QuadraticExtensionAlgebraVariable {
-	var inner [D][]QuadraticExtensionAlgebraVariable
-	var innerW [D][]QuadraticExtensionAlgebraVariable
-
-	for i := 0; i < D; i++ {
-		for j := 0; j < D-i; j++ {
-			idx := (i + j) % D
-			inner[idx] = append(inner[idx], QuadraticExtensionAlgebraVariable{a[i], b[j]})
-		}
-		for j := D - i; j < D; j++ {
-			idx := (i + j) % D
-			innerW[idx] = append(innerW[idx], QuadraticExtensionAlgebraVariable{a[i], b[j]})
-		}
+	// In the quadratic tower with W=7, the result is
+	// (a0*b0 + W*a1*b1, a0*b1 + a1*b0). Each component of the first
+	// coefficient is below 64p² and of the second below 16p² when all
+	// inputs are canonical. An 80-bit quotient and canonical remainder
+	// therefore suffice, including for an adversarial witness.
+	if D != 2 || W != 7 || p.api.Compiler().FieldBitLen() < 145 {
+		panic("extension algebra multiplication requires D=2, W=7 and a host field larger than 2^144")
 	}
-
+	for _, value := range a {
+		p.RangeCheckQE(value)
+	}
+	for _, value := range b {
+		p.RangeCheckQE(value)
+	}
+	ac := p.MulExtensionNoReduce(a[0], b[0])
+	bd := p.MulExtensionNoReduce(a[1], b[1])
+	ad := p.MulExtensionNoReduce(a[0], b[1])
+	bc := p.MulExtensionNoReduce(a[1], b[0])
 	var product QuadraticExtensionAlgebraVariable
 	for i := 0; i < D; i++ {
-		acc := p.InnerProductExtension(NewVariable(W), ZeroExtension(), innerW[i])
-		product[i] = p.InnerProductExtension(One(), acc, inner[i])
+		constant := p.AddNoReduce(ac[i], p.MulNoReduce(bd[i], NewVariable(W)))
+		linear := p.AddNoReduce(ad[i], bc[i])
+		product[0][i] = p.ReduceWithMaxBits(constant, 80)
+		product[1][i] = p.ReduceWithMaxBits(linear, 80)
 	}
-
 	return product
 }
 

@@ -335,43 +335,61 @@ func (f *Chip) interpolateChecked(
 	// Each node carries the product of its (x-x_i) factors and the sum
 	// of its weighted terms multiplied by all other factors in that node.
 	// Combining nodes avoids constructing a separate product for each leaf.
-	// Two extension products of canonical coefficients have c0 < 16p^2
-	// and c1 < 4p^2; 80-bit quotients and canonical remainders therefore
-	// fit without wraparound in a host field larger than 2^144.
+	// Two extension products of canonical coefficients have c0 < 16p²
+	// and c1 < 4p²; 80-bit quotients fit in a host field larger than 2^144.
 	if gl.W != 7 || f.api.Compiler().FieldBitLen() < 145 {
 		panic("FRI interpolation requires W=7 and a host field larger than 2^144")
 	}
+	// On larger host fields, keep leaf products unreduced until their parent.
+	// A leaf has c0 < 8p² and c1 < 2p². Combining two such leaves with
+	// canonical products gives c0 < 44p³ and c1 < 20p³. A 144-bit quotient
+	// and a canonical remainder then fit without wraparound below 2^208.
+	deferLeaves := f.api.Compiler().FieldBitLen() >= 209
 	type node struct {
-		product gl.QuadraticExtensionVariable
-		sum     gl.QuadraticExtensionVariable
+		product   gl.QuadraticExtensionVariable
+		sum       gl.QuadraticExtensionVariable
+		canonical bool
 	}
 	var build func(int, int) node
 	build = func(lo, hi int) node {
 		if lo == hi {
-			return node{product: gl.OneExtension(), sum: gl.ZeroExtension()}
+			return node{product: gl.OneExtension(), sum: gl.ZeroExtension(), canonical: true}
 		}
 		if hi-lo == 1 {
-			return node{
-				product: f.gl.SubExtension(x, xPoints[lo]),
-				sum:     f.gl.MulExtension(yPoints[lo], barycentricWeights[lo]),
+			product := f.gl.SubExtension(x, xPoints[lo])
+			if deferLeaves {
+				return node{product: product, sum: f.gl.MulExtensionNoReduce(yPoints[lo], barycentricWeights[lo])}
 			}
+			return node{product: product, sum: f.gl.MulExtension(yPoints[lo], barycentricWeights[lo]), canonical: true}
 		}
 		mid := lo + (hi-lo)/2
 		left, right := build(lo, mid), build(mid, hi)
 		product := f.gl.MulExtension(left.product, right.product)
 		sum := f.gl.MulExtensionNoReduce(left.sum, right.product)
 		sum = f.gl.MulAddExtensionNoReduce(right.sum, left.product, sum)
+		quotientBits := uint64(80)
+		if !left.canonical || !right.canonical {
+			quotientBits = 144
+		}
 		return node{
-			product: product,
+			product:   product,
+			canonical: true,
 			sum: gl.NewQuadraticExtensionVariable(
-				f.gl.ReduceWithMaxBits(sum[0], 80),
-				f.gl.ReduceWithMaxBits(sum[1], 80),
+				f.gl.ReduceWithMaxBits(sum[0], quotientBits),
+				f.gl.ReduceWithMaxBits(sum[1], quotientBits),
 			),
 		}
 	}
 	root := build(0, len(xPoints))
 	// Preserve the original rejection when x is an interpolation point.
 	f.api.AssertIsEqual(f.gl.IsZero(root.product), 0)
+	if !root.canonical {
+		// A one-point tree has no parent to reduce its leaf product.
+		return gl.NewQuadraticExtensionVariable(
+			f.gl.ReduceWithMaxBits(root.sum[0], 80),
+			f.gl.ReduceWithMaxBits(root.sum[1], 80),
+		)
+	}
 	return root.sum
 }
 
@@ -439,26 +457,27 @@ func (f *Chip) computeEvaluationChecked(
 	barycentricWeights := make([]gl.QuadraticExtensionVariable, len(xPoints))
 	if arity == 1 {
 		barycentricWeights[0] = gl.OneExtension()
-	} else {
-		// x_i = s*g^i with g a primitive n-th root and s != 0. The
-		// derivative of X^n-s^n at x_i is n*s^n/x_i, hence the
-		// barycentric weight is x_i/(n*s^n).
-		inverseStart, hasInverse := f.gl.Inverse(cosetStart)
-		f.api.AssertIsEqual(hasInverse, 1)
-		inverseStartPow := inverseStart
-		for i := uint64(0); i < arityBits; i++ {
-			inverseStartPow = f.gl.Mul(inverseStartPow, inverseStartPow)
-		}
-		nField := goldilocks.NewElement(uint64(arity))
-		nInverse := goldilocks.NewElement(0)
-		nInverse.Inverse(&nField)
-		factor := f.gl.Mul(inverseStartPow, gl.NewVariable(nInverse.Uint64()))
-		for i := range xPoints {
-			barycentricWeights[i] = f.gl.Mul(xPoints[i][0], factor).ToQuadraticExtension()
-		}
+		return f.interpolateChecked(beta, xPoints, yPoints, barycentricWeights, checked)
 	}
-
-	return f.interpolateChecked(beta, xPoints, yPoints, barycentricWeights, checked)
+	// x_i = s*g^i and weight_i = x_i/(n*s^n). Factor the shared
+	// s/(n*s^n) out of the interpolation sum and use constant g^i leaves.
+	inverseStart, hasInverse := f.gl.Inverse(cosetStart)
+	f.api.AssertIsEqual(hasInverse, 1)
+	inverseStartPow := inverseStart
+	for i := uint64(0); i < arityBits; i++ {
+		inverseStartPow = f.gl.Mul(inverseStartPow, inverseStartPow)
+	}
+	nField := goldilocks.NewElement(uint64(arity))
+	nInverse := goldilocks.NewElement(0)
+	nInverse.Inverse(&nField)
+	factor := f.gl.Mul(inverseStartPow, gl.NewVariable(nInverse.Uint64()))
+	common := f.gl.Mul(cosetStart, factor)
+	root := goldilocks.NewElement(1)
+	for i := range barycentricWeights {
+		barycentricWeights[i] = gl.NewVariable(root.Uint64()).ToQuadraticExtension()
+		root.Mul(&root, &g)
+	}
+	return f.gl.ScalarMulExtension(f.interpolateChecked(beta, xPoints, yPoints, barycentricWeights, checked), common)
 }
 
 func (f *Chip) verifyQueryRound(

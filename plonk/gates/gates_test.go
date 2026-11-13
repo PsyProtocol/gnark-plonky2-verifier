@@ -726,6 +726,26 @@ func TestPoseidonMdsGateVectorBN254(t *testing.T) {
 	test.NewAssert(t).NoError(err)
 }
 
+func TestExtensionAlgebraGateVectorsBN254(t *testing.T) {
+	t.Setenv("USE_BIT_DECOMPOSITION_RANGE_CHECK", "true")
+	cases := []struct {
+		gate gates.Gate
+		want []gl.QuadraticExtensionVariable
+	}{
+		{gates.NewArithmeticExtensionGate(10), arithmeticExtensionGateExpectedConstraints},
+		{gates.NewMultiplicationExtensionGate(13), mulExtensionGateExpectedConstraints},
+		{gates.NewReducingExtensionGate(33), reducingExtensionGateExpectedConstraints},
+		{gates.NewReducingGate(44), reducingGateExpectedConstraints},
+	}
+	for _, tc := range cases {
+		circuit := &TestGateCircuit{testGate: tc.gate, ExpectedConstraints: tc.want}
+		witness := &TestGateCircuit{testGate: tc.gate, ExpectedConstraints: tc.want}
+		if err := test.IsSolved(circuit, witness, ecc.BN254.ScalarField()); err != nil {
+			t.Fatalf("%s: %v", tc.gate.Id(), err)
+		}
+	}
+}
+
 func TestGates(t *testing.T) {
 	assert := test.NewAssert(t)
 
