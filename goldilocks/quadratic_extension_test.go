@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/zilong-dai/gnark/backend/groth16"
 	"github.com/zilong-dai/gnark/frontend"
 	"github.com/zilong-dai/gnark/frontend/cs/r1cs"
 	"github.com/zilong-dai/gnark/test"
@@ -74,6 +75,68 @@ func TestCanonicalExtensionMulAddMax(t *testing.T) {
 	}
 	if err := ccs.IsSolved(witness); err == nil {
 		t.Fatal("accepted an incorrect extension multiply-add")
+	}
+}
+
+// Compare against the general reduction on boundary values and exercise the
+// tightened quotient bounds through a Groth16 proof.
+type canonicalExtensionProductComparison struct {
+	A, B, C QuadraticExtensionVariable
+}
+
+func (c *canonicalExtensionProductComparison) Define(api frontend.API) error {
+	chip := New(api)
+	chip.AssertIsEqualExtension(chip.MulAddExtensionCanonical(c.A, c.B, c.C), chip.MulAddExtension(c.A, c.B, c.C))
+	return nil
+}
+
+func TestCanonicalExtensionProductBounds(t *testing.T) {
+	cs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &canonicalExtensionProductComparison{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs.GetCommitments().CommitmentIndexes()) != 0 {
+		t.Fatal("unexpected commitment")
+	}
+	max := new(big.Int).Sub(MODULUS, big.NewInt(1))
+	values := []*big.Int{big.NewInt(0), big.NewInt(1), max}
+	var witness frontend.Circuit
+	for _, a := range values {
+		for _, b := range values {
+			for _, c := range values {
+				witness = &canonicalExtensionProductComparison{
+					A: NewQuadraticExtensionVariable(NewVariable(a), NewVariable(a)),
+					B: NewQuadraticExtensionVariable(NewVariable(b), NewVariable(b)),
+					C: NewQuadraticExtensionVariable(NewVariable(c), NewVariable(c)),
+				}
+				w, err := frontend.NewWitness(witness, ecc.BN254.ScalarField())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := cs.IsSolved(w); err != nil {
+					t.Fatalf("a=%s b=%s c=%s: %v", a, b, c, err)
+				}
+			}
+		}
+	}
+	w, err := frontend.NewWitness(witness, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk, vk, err := groth16.Setup(cs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := groth16.Prove(cs, pk, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := w.Public()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := groth16.Verify(proof, vk, public); err != nil {
+		t.Fatal(err)
 	}
 }
 

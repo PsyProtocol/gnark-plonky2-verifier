@@ -59,12 +59,8 @@ func (p *Chip) SubExtensionNoReduce(a, b QuadraticExtensionVariable) QuadraticEx
 func (p *Chip) MulExtension(a, b QuadraticExtensionVariable) QuadraticExtensionVariable {
 	product := p.MulExtensionNoReduce(a, b)
 	// With canonical inputs, c0 < 8*p^2 and c1 < 2*p^2. Both
-	// quotients are therefore below 8*p < 2^67; use an aligned bound
-	// so the commitment-based checker can also handle it.
-	return NewQuadraticExtensionVariable(
-		p.ReduceWithMaxBits(product[0], 80),
-		p.ReduceWithMaxBits(product[1], 80),
-	)
+	// quotients are respectively below 8*p < 2^67 and 2*p < 2^65.
+	return p.reduceCanonicalExtensionProduct(product)
 }
 
 // Multiplies quadratic extension variable in the Goldilocks field without reducing.
@@ -86,13 +82,24 @@ func (p *Chip) MulAddExtension(a, b, c QuadraticExtensionVariable) QuadraticExte
 
 // MulAddExtensionCanonical requires all input coefficients to be canonical.
 // The result is a subset of the general MulAddExtension constraints: each
-// quotient is below 9*p < 2^68 for canonical inputs.
+// quotient is bounded as in MulExtension for canonical inputs.
 func (p *Chip) MulAddExtensionCanonical(a, b, c QuadraticExtensionVariable) QuadraticExtensionVariable {
 	product := p.MulExtensionNoReduce(a, b)
 	sum := p.AddExtensionNoReduce(product, c)
+	return p.reduceCanonicalExtensionProduct(sum)
+}
+
+// Both coefficients of a product plus at most one canonical extension element
+// are below 8*p² and 2*p² respectively. The commitment checker uses
+// 16-bit limbs, so keep its widths aligned.
+func (p *Chip) reduceCanonicalExtensionProduct(value QuadraticExtensionVariable) QuadraticExtensionVariable {
+	firstBits, secondBits := uint64(67), uint64(65)
+	if p.rangeCheckerType == COMMIT_RANGE_CHECKER {
+		firstBits, secondBits = 80, 80
+	}
 	return NewQuadraticExtensionVariable(
-		p.ReduceWithMaxBits(sum[0], 80),
-		p.ReduceWithMaxBits(sum[1], 80),
+		p.ReduceWithMaxBits(value[0], firstBits),
+		p.ReduceWithMaxBits(value[1], secondBits),
 	)
 }
 
