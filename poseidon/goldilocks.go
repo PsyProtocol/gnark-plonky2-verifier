@@ -112,7 +112,13 @@ func (c *GoldilocksChip) partialRounds(state GoldilocksState, roundCounter *int)
 	state = c.mdsPartialLayerInit(state)
 
 	for i := 0; i < N_PARTIAL_ROUNDS; i++ {
-		state[0] = c.sBoxMonomial(state[0])
+		if i == 0 {
+			// The initial matrix may leave this lane below 265p.
+			state[0] = c.sBoxMonomial(state[0])
+		} else {
+			// Every preceding fast MDS round reduces lane zero to [0, p).
+			state[0] = c.sBoxMonomialCanonical(state[0])
+		}
 		state[0] = c.gl.AddNoReduce(state[0], canonicalRoundConstant(FAST_PARTIAL_ROUND_CONSTANTS[i]))
 		state = c.mdsPartialLayerFast(state, i)
 	}
@@ -160,6 +166,16 @@ func (c *GoldilocksChip) ConstantLayerExtension(state GoldilocksStateExtension, 
 }
 
 func (c *GoldilocksChip) sBoxMonomial(x gl.Variable) gl.Variable {
+	return c.sBoxMonomialWithBounds(x, false)
+}
+
+// sBoxMonomialCanonical may only be used for an input already constrained
+// to [0, p). Both x^3 and x*(x^3 mod p)^2 then have quotients below p^2.
+func (c *GoldilocksChip) sBoxMonomialCanonical(x gl.Variable) gl.Variable {
+	return c.sBoxMonomialWithBounds(x, true)
+}
+
+func (c *GoldilocksChip) sBoxMonomialWithBounds(x gl.Variable, canonical bool) gl.Variable {
 	// A lazy MDS row is below 264p; adding a canonical constant gives x <
 	// 265p. The x^3 quotient is < 265^3*p^2 < 2^153. After reducing x^3,
 	// the x^7 quotient is < 265*p^2 < 2^137. The commitment-checker bounds
@@ -168,11 +184,16 @@ func (c *GoldilocksChip) sBoxMonomial(x gl.Variable) gl.Variable {
 		panic("Poseidon S-box bounds require a host field larger than 2^224")
 	}
 	x3Bits, x7Bits := uint64(153), uint64(137)
+	if canonical {
+		x3Bits, x7Bits = 128, 128
+	}
 	// The commitment range checker requires widths aligned to its 16-bit
 	// base. The wider bounds still keep the equations below the host field.
-	if _, native := c.api.(frontend.Rangechecker); !native {
-		if _, committer := c.api.(frontend.Committer); committer {
-			x3Bits, x7Bits = 160, 144
+	if !canonical {
+		if _, native := c.api.(frontend.Rangechecker); !native {
+			if _, committer := c.api.(frontend.Committer); committer {
+				x3Bits, x7Bits = 160, 144
+			}
 		}
 	}
 	x2 := c.gl.MulNoReduce(x, x)

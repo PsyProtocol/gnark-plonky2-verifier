@@ -718,6 +718,14 @@ func TestPoseidonGateVectorBN254(t *testing.T) {
 	test.NewAssert(t).NoError(err)
 }
 
+func TestPoseidonMdsGateVectorBN254(t *testing.T) {
+	t.Setenv("USE_BIT_DECOMPOSITION_RANGE_CHECK", "true")
+	circuit := &TestGateCircuit{testGate: &gates.PoseidonMdsGate{}, ExpectedConstraints: poseidonMdsGateExpectedConstraints}
+	witness := &TestGateCircuit{testGate: &gates.PoseidonMdsGate{}, ExpectedConstraints: poseidonMdsGateExpectedConstraints}
+	err := test.IsSolved(circuit, witness, ecc.BN254.ScalarField())
+	test.NewAssert(t).NoError(err)
+}
+
 func TestGates(t *testing.T) {
 	assert := test.NewAssert(t)
 

@@ -3,9 +3,9 @@ package gates
 import (
 	"regexp"
 
-	"github.com/zilong-dai/gnark/frontend"
 	gl "github.com/cf/gnark-plonky2-verifier/goldilocks"
 	"github.com/cf/gnark-plonky2-verifier/poseidon"
+	"github.com/zilong-dai/gnark/frontend"
 )
 
 var poseidonMdsGateRegex = regexp.MustCompile("PoseidonMdsGate.*")
@@ -40,35 +40,23 @@ func (g *PoseidonMdsGate) WireOutput(i uint64) Range {
 	return Range{(poseidon.SPONGE_WIDTH + i) * gl.D, (poseidon.SPONGE_WIDTH + i + 1) * gl.D}
 }
 
-func (g *PoseidonMdsGate) mdsRowShfAlgebra(
-	r uint64,
-	v [poseidon.SPONGE_WIDTH]gl.QuadraticExtensionAlgebraVariable,
-	api frontend.API,
-) gl.QuadraticExtensionAlgebraVariable {
-	glApi := gl.New(api)
-	if r >= poseidon.SPONGE_WIDTH {
-		panic("MDS row index out of range")
-	}
-
-	res := gl.ZeroExtensionAlgebra()
-	for i := uint64(0); i < poseidon.SPONGE_WIDTH; i++ {
-		coeff := gl.NewQuadraticExtensionVariable(gl.NewVariable(poseidon.MDS_MATRIX_CIRC[i]), gl.Zero())
-		res = glApi.AddExtensionAlgebra(res, glApi.ScalarMulExtensionAlgebra(coeff, v[(i+r)%poseidon.SPONGE_WIDTH]))
-	}
-
-	coeff := gl.NewQuadraticExtensionVariable(gl.NewVariable(poseidon.MDS_MATRIX_DIAG[r]), gl.Zero())
-	res = glApi.AddExtensionAlgebra(res, glApi.ScalarMulExtensionAlgebra(coeff, v[r]))
-
-	return res
-}
-
 func (g *PoseidonMdsGate) mdsLayerAlgebra(
 	state [poseidon.SPONGE_WIDTH]gl.QuadraticExtensionAlgebraVariable,
 	api frontend.API,
 ) [poseidon.SPONGE_WIDTH]gl.QuadraticExtensionAlgebraVariable {
+	// The matrix coefficients are base-field scalars, so each algebra
+	// coordinate is an independent extension-field MDS layer.
+	chip := poseidon.NewGoldilocksChip(api)
 	var result [poseidon.SPONGE_WIDTH]gl.QuadraticExtensionAlgebraVariable
-	for r := uint64(0); r < poseidon.SPONGE_WIDTH; r++ {
-		result[r] = g.mdsRowShfAlgebra(r, state, api)
+	for coordinate := 0; coordinate < int(gl.D); coordinate++ {
+		var layer poseidon.GoldilocksStateExtension
+		for i := range layer {
+			layer[i] = state[i][coordinate]
+		}
+		output := chip.MdsLayerExtension(layer)
+		for i := range output {
+			result[i][coordinate] = output[i]
+		}
 	}
 	return result
 }
