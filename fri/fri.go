@@ -332,29 +332,47 @@ func (f *Chip) interpolateChecked(
 			f.gl.RangeCheckQE(y)
 		}
 	}
-	// Prefix products P[i] = product_{j<i} (x-x_j).
-	n := len(xPoints)
-	differences := make([]gl.QuadraticExtensionVariable, n)
-	prefix := make([]gl.QuadraticExtensionVariable, n+1)
-	prefix[0] = gl.OneExtension()
-	for i := range xPoints {
-		differences[i] = f.gl.SubExtension(x, xPoints[i])
-		prefix[i+1] = f.gl.MulExtension(prefix[i], differences[i])
+	// Each node carries the product of its (x-x_i) factors and the sum
+	// of its weighted terms multiplied by all other factors in that node.
+	// Combining nodes avoids constructing a separate product for each leaf.
+	// Two extension products of canonical coefficients have c0 < 16p^2
+	// and c1 < 4p^2; 80-bit quotients and canonical remainders therefore
+	// fit without wraparound in a host field larger than 2^144.
+	if gl.W != 7 || f.api.Compiler().FieldBitLen() < 145 {
+		panic("FRI interpolation requires W=7 and a host field larger than 2^144")
 	}
-	// The previous implementation's division enforces every denominator to
-	// be nonzero, including when x equals an interpolation point.
-	f.api.AssertIsEqual(f.gl.IsZero(prefix[n]), 0)
-	suffix := gl.OneExtension()
-	sum := gl.ZeroExtension()
-	for i := n - 1; i >= 0; i-- {
-		others := f.gl.MulExtension(prefix[i], suffix)
-		weighted := f.gl.MulExtension(yPoints[i], barycentricWeights[i])
-		sum = f.gl.MulAddExtensionCanonical(weighted, others, sum)
-		if i != 0 {
-			suffix = f.gl.MulExtension(suffix, differences[i])
+	type node struct {
+		product gl.QuadraticExtensionVariable
+		sum     gl.QuadraticExtensionVariable
+	}
+	var build func(int, int) node
+	build = func(lo, hi int) node {
+		if lo == hi {
+			return node{product: gl.OneExtension(), sum: gl.ZeroExtension()}
+		}
+		if hi-lo == 1 {
+			return node{
+				product: f.gl.SubExtension(x, xPoints[lo]),
+				sum:     f.gl.MulExtension(yPoints[lo], barycentricWeights[lo]),
+			}
+		}
+		mid := lo + (hi-lo)/2
+		left, right := build(lo, mid), build(mid, hi)
+		product := f.gl.MulExtension(left.product, right.product)
+		sum := f.gl.MulExtensionNoReduce(left.sum, right.product)
+		sum = f.gl.MulAddExtensionNoReduce(right.sum, left.product, sum)
+		return node{
+			product: product,
+			sum: gl.NewQuadraticExtensionVariable(
+				f.gl.ReduceWithMaxBits(sum[0], 80),
+				f.gl.ReduceWithMaxBits(sum[1], 80),
+			),
 		}
 	}
-	return sum
+	root := build(0, len(xPoints))
+	// Preserve the original rejection when x is an interpolation point.
+	f.api.AssertIsEqual(f.gl.IsZero(root.product), 0)
+	return root.sum
 }
 
 func (f *Chip) computeEvaluation(
