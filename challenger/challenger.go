@@ -11,18 +11,31 @@ import (
 	"github.com/zilong-dai/gnark/frontend"
 )
 
+type absorptionMode uint8
+
+const (
+	reduceInput absorptionMode = iota
+	checkCanonicalInput
+	canonicalByConstruction
+)
+
+type bufferedInput struct {
+	value gl.Variable
+	mode  absorptionMode
+}
+
 type Chip struct {
 	api               frontend.API `gnark:"-"`
 	poseidonChip      *poseidon.GoldilocksChip
 	poseidonBN254Chip *poseidon.BN254Chip
 	spongeState       poseidon.GoldilocksState
-	inputBuffer       []gl.Variable
+	inputBuffer       []bufferedInput
 	outputBuffer      []gl.Variable
 }
 
 func NewChip(api frontend.API) *Chip {
 	var spongeState poseidon.GoldilocksState
-	var inputBuffer []gl.Variable
+	var inputBuffer []bufferedInput
 	var outputBuffer []gl.Variable
 	for i := 0; i < poseidon.SPONGE_WIDTH; i++ {
 		spongeState[i] = gl.Zero()
@@ -40,9 +53,13 @@ func NewChip(api frontend.API) *Chip {
 }
 
 func (c *Chip) ObserveElement(element gl.Variable) {
+	c.observeElement(element, reduceInput)
+}
+
+func (c *Chip) observeElement(element gl.Variable, mode absorptionMode) {
 	// Clear the output buffer
 	c.outputBuffer = make([]gl.Variable, 0)
-	c.inputBuffer = append(c.inputBuffer, element)
+	c.inputBuffer = append(c.inputBuffer, bufferedInput{value: element, mode: mode})
 	if len(c.inputBuffer) == poseidon.SPONGE_RATE {
 		c.duplexing()
 	}
@@ -61,7 +78,10 @@ func (c *Chip) ObserveHash(hash poseidon.GoldilocksHashOut) {
 
 func (c *Chip) ObserveBN254Hash(hash poseidon.BN254HashOut) {
 	elements := c.poseidonBN254Chip.ToVec(hash)
-	c.ObserveElements(elements)
+	// ToVec constrains each chunk to at most 56 bits, strictly below p.
+	for _, element := range elements {
+		c.observeElement(element, canonicalByConstruction)
+	}
 }
 
 func (c *Chip) ObserveCap(cap []poseidon.BN254HashOut) {
@@ -83,6 +103,17 @@ func (c *Chip) ObserveExtensionElements(elements []gl.QuadraticExtensionVariable
 func (c *Chip) ObserveOpenings(openings fri.Openings) {
 	for i := 0; i < len(openings.Batches); i++ {
 		c.ObserveExtensionElements(openings.Batches[i].Values)
+	}
+}
+
+// ObserveCheckedOpenings range-checks each component when it is absorbed.
+// Checking at absorption also covers expressions changed while buffered.
+func (c *Chip) ObserveCheckedOpenings(openings fri.Openings) {
+	for _, batch := range openings.Batches {
+		for _, element := range batch.Values {
+			c.observeElement(element[0], checkCanonicalInput)
+			c.observeElement(element[1], checkCanonicalInput)
+		}
 	}
 }
 
@@ -121,6 +152,29 @@ func (c *Chip) GetFriChallenges(
 	degreeBits uint64,
 	config types.FriConfig,
 ) variables.FriChallenges {
+	return c.getFriChallenges(commitPhaseMerkleCaps, finalPoly, powWitness, degreeBits, config, false)
+}
+
+// GetFriChallengesChecked constrains final polynomial coefficients and the
+// proof-of-work witness before they are absorbed into the transcript.
+func (c *Chip) GetFriChallengesChecked(
+	commitPhaseMerkleCaps []variables.FriMerkleCap,
+	finalPoly variables.PolynomialCoeffs,
+	powWitness gl.Variable,
+	degreeBits uint64,
+	config types.FriConfig,
+) variables.FriChallenges {
+	return c.getFriChallenges(commitPhaseMerkleCaps, finalPoly, powWitness, degreeBits, config, true)
+}
+
+func (c *Chip) getFriChallenges(
+	commitPhaseMerkleCaps []variables.FriMerkleCap,
+	finalPoly variables.PolynomialCoeffs,
+	powWitness gl.Variable,
+	degreeBits uint64,
+	config types.FriConfig,
+	checked bool,
+) variables.FriChallenges {
 	numFriQueries := config.NumQueryRounds
 	friAlpha := c.GetExtensionChallenge()
 
@@ -130,8 +184,16 @@ func (c *Chip) GetFriChallenges(
 		friBetas = append(friBetas, c.GetExtensionChallenge())
 	}
 
-	c.ObserveExtensionElements(finalPoly.Coeffs)
-	c.ObserveElement(powWitness)
+	if checked {
+		for _, element := range finalPoly.Coeffs {
+			c.observeElement(element[0], checkCanonicalInput)
+			c.observeElement(element[1], checkCanonicalInput)
+		}
+		c.observeElement(powWitness, checkCanonicalInput)
+	} else {
+		c.ObserveExtensionElements(finalPoly.Coeffs)
+		c.ObserveElement(powWitness)
+	}
 
 	friPowResponse := c.GetChallenge()
 	friQueryIndices := c.GetNChallenges(numFriQueries)
@@ -153,10 +215,21 @@ func (c *Chip) duplexing() {
 	glApi := gl.New(c.api)
 
 	for i := 0; i < len(c.inputBuffer); i++ {
-		c.spongeState[i] = glApi.Reduce(c.inputBuffer[i])
+		input := c.inputBuffer[i]
+		switch input.mode {
+		case reduceInput:
+			c.spongeState[i] = glApi.Reduce(input.value)
+		case checkCanonicalInput:
+			glApi.RangeCheck(input.value)
+			c.spongeState[i] = input.value
+		case canonicalByConstruction:
+			c.spongeState[i] = input.value
+		default:
+			panic("invalid transcript absorption mode")
+		}
 	}
 	// Clear the input buffer
-	c.inputBuffer = make([]gl.Variable, 0)
+	c.inputBuffer = make([]bufferedInput, 0)
 	c.spongeState = c.poseidonChip.Poseidon(c.spongeState)
 
 	// Clear the output buffer

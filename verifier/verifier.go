@@ -95,9 +95,9 @@ func (c *VerifierChip) GetChallenges(
 	plonkAlphas := challenger.GetNChallenges(numChallenges)
 	challenger.ObserveCap(proof.QuotientPolysCap)
 	plonkZeta := challenger.GetExtensionChallenge()
-	challenger.ObserveOpenings(c.friChip.ToOpenings(proof.Openings))
+	challenger.ObserveCheckedOpenings(c.friChip.ToOpenings(proof.Openings))
 
-	friChallenges := challenger.GetFriChallenges(
+	friChallenges := challenger.GetFriChallengesChecked(
 		proof.OpeningProof.CommitPhaseMerkleCaps,
 		proof.OpeningProof.FinalPoly,
 		proof.OpeningProof.PowWitness,
