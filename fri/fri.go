@@ -281,16 +281,9 @@ func (f *Chip) friCombineInitialChecked(
 			panic("not enough alpha powers")
 		}
 		reducedEvals := f.reduceBaseWithPowersChecked(evals, precomputedAlphaPowers, checked)
-		numerator := f.gl.SubExtensionNoReduce(reducedEvals, reducedOpenings)
 		denominator := f.gl.SubExtension(subgroupX_QE, point)
 		sum = f.gl.MulExtension(precomputedAlphaPowers[len(evals)], sum)
-		inv, hasInv := f.gl.InverseExtension(denominator)
-		f.api.AssertIsEqual(hasInv, frontend.Variable(1))
-		sum = f.gl.MulAddExtension(
-			numerator,
-			inv,
-			sum,
-		)
+		sum = f.gl.AddDivExtensionCanonical(reducedEvals, reducedOpenings, denominator, sum)
 	}
 
 	return sum
