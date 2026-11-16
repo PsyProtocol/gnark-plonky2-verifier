@@ -297,6 +297,30 @@ func (f *Chip) finalPolyEval(finalPoly variables.PolynomialCoeffs, point gl.Quad
 	return ret
 }
 
+// finalPolyEvalGrouped evaluates pairs of canonical coefficients at a base
+// field point, reducing acc*x² + odd*x + even only once per coefficient pair.
+func (f *Chip) finalPolyEvalGrouped(finalPoly variables.PolynomialCoeffs, point gl.Variable) gl.QuadraticExtensionVariable {
+	if len(finalPoly.Coeffs) == 0 {
+		return gl.ZeroExtension()
+	}
+	if f.api.Compiler().FieldBitLen() < 145 {
+		panic("grouped Horner requires a host field larger than 2^144")
+	}
+	squared := f.gl.Mul(point, point)
+	ret := gl.ZeroExtension()
+	for pair := (len(finalPoly.Coeffs) - 1) / 2; pair >= 0; pair-- {
+		for j := range ret {
+			value := f.gl.MulAddNoReduce(ret[j], squared, finalPoly.Coeffs[2*pair][j])
+			if 2*pair+1 < len(finalPoly.Coeffs) {
+				value = f.gl.MulAddNoReduce(finalPoly.Coeffs[2*pair+1][j], point, value)
+			}
+			// The sum is below 2p²+p, so its quotient fits in 66 bits.
+			ret[j] = f.gl.ReduceWithBound(value, 66)
+		}
+	}
+	return ret
+}
+
 func (f *Chip) interpolateChecked(
 	x gl.QuadraticExtensionVariable,
 	xPoints []gl.QuadraticExtensionVariable,
@@ -393,6 +417,8 @@ func (f *Chip) computeEvaluationChecked(
 	beta gl.QuadraticExtensionVariable,
 	checked bool,
 ) gl.QuadraticExtensionVariable {
+	// checked means both the evaluations and beta were constrained by
+	// VerifyFriProof before entering its query loop.
 	arity := 1 << arityBits
 	if (len(evals)) != arity {
 		panic("len(evals) != arity")
@@ -442,8 +468,8 @@ func (f *Chip) foldRadix2(values []gl.QuadraticExtensionVariable, beta gl.Quadra
 		for _, value := range values {
 			f.gl.RangeCheckQE(value)
 		}
+		f.gl.RangeCheckQE(beta)
 	}
-	f.gl.RangeCheckQE(beta)
 	inverse, hasInverse := f.gl.Inverse(start)
 	f.api.AssertIsEqual(hasInverse, 1)
 	z := f.gl.ScalarMulExtension(beta, inverse)
@@ -486,10 +512,16 @@ func (f *Chip) foldRadix2(values []gl.QuadraticExtensionVariable, beta gl.Quadra
 			power.Mul(&power, &inverseRoot)
 		}
 		values = next
-		z = f.gl.MulExtension(z, z)
+		if level > 1 {
+			z = f.gl.MulExtension(z, z)
+		}
 	}
-	// Match the existing rejection of evaluation points on the coset.
-	f.api.AssertIsEqual(f.gl.IsZero(f.gl.SubExtension(z, gl.OneExtension())), 0)
+	// z=(beta/start)^(n/2). Reject z²=1 by comparing the canonical
+	// coefficients with +1 and -1, avoiding another extension square.
+	imaginaryZero := f.api.IsZero(z[1].Limb)
+	realOne := f.api.IsZero(f.api.Sub(z[0].Limb, 1))
+	realMinusOne := f.api.IsZero(f.api.Sub(z[0].Limb, gl.MODULUS.Uint64()-1))
+	f.api.AssertIsEqual(f.api.Mul(imaginaryZero, f.api.Add(realOne, realMinusOne)), 0)
 	n := goldilocks.NewElement(uint64(1) << arityBits)
 	nInverse := goldilocks.NewElement(0)
 	nInverse.Inverse(&n)
@@ -604,8 +636,7 @@ func (f *Chip) verifyQueryRound(
 		xIndexBits = cosetIndexBits
 	}
 
-	subgroupX_QE = subgroupX.ToQuadraticExtension()
-	finalPolyEval := f.finalPolyEval(proof.FinalPoly, subgroupX_QE)
+	finalPolyEval := f.finalPolyEvalGrouped(proof.FinalPoly, subgroupX)
 
 	f.gl.AssertIsEqual(oldEval[0], finalPolyEval[0])
 	f.gl.AssertIsEqual(oldEval[1], finalPolyEval[1])
@@ -653,6 +684,10 @@ func (f *Chip) VerifyFriProof(
 	// Avoid introducing unused constraints when there are no query rounds.
 	var alphaPowers []gl.QuadraticExtensionVariable
 	if len(friChallenges.FriQueryIndices) != 0 {
+		// The same beta is used by every query in its FRI layer.
+		for _, beta := range friChallenges.FriBetas {
+			f.gl.RangeCheckQE(beta)
+		}
 		maxExponent := 0
 		for _, batch := range instance.Batches {
 			if len(batch.Polynomials) > maxExponent {
