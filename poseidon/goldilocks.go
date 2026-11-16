@@ -97,7 +97,16 @@ func (c *GoldilocksChip) fullRoundsLazy(state GoldilocksState, roundCounter *int
 	validateMdsCoefficients()
 	for i := 0; i < HALF_N_FULL_ROUNDS; i++ {
 		state = c.constantLayer(state, roundCounter)
-		state = c.sBoxLayer(state)
+		if i == 0 {
+			// Each group starts from canonical lanes (the Poseidon input, or
+			// the reduced partial-round output), so the first S-box input is
+			// below 2p and admits tighter quotient bounds.
+			for j := range state {
+				state[j] = c.sBoxMonomialFirstRound(state[j])
+			}
+		} else {
+			state = c.sBoxLayer(state)
+		}
 		state = c.mdsLayerLazy(state)
 		*roundCounter += 1
 	}
@@ -209,6 +218,29 @@ func (c *GoldilocksChip) SBoxMonomialExtension(x gl.QuadraticExtensionVariable) 
 	x4 := c.gl.MulExtension(x2, x2)
 	x3 := c.gl.MulExtension(x, x2)
 	return c.gl.MulExtension(x4, x3)
+}
+
+// sBoxMonomialFirstRound handles an input below 2p (a canonical element plus
+// a canonical round constant). The x^3 quotient is below 8p² < 2^131 and the
+// x^7 quotient below 2p² < 2^129.
+func (c *GoldilocksChip) sBoxMonomialFirstRound(x gl.Variable) gl.Variable {
+	if c.api.Compiler().FieldBitLen() < 225 {
+		panic("Poseidon S-box bounds require a host field larger than 2^224")
+	}
+	x3Bits, x7Bits := uint64(131), uint64(129)
+	// The commitment range checker requires widths aligned to its 16-bit
+	// base. The wider bounds still keep the equations below the host field.
+	if _, native := c.api.(frontend.Rangechecker); !native {
+		if _, committer := c.api.(frontend.Committer); committer {
+			x3Bits, x7Bits = 144, 144
+		}
+	}
+	x2 := c.gl.MulNoReduce(x, x)
+	x3 := c.gl.MulNoReduce(x, x2)
+	x3 = c.gl.ReduceWithMaxBits(x3, x3Bits)
+	x6 := c.gl.MulNoReduce(x3, x3)
+	x7 := c.gl.MulNoReduce(x, x6)
+	return c.gl.ReduceWithMaxBits(x7, x7Bits)
 }
 
 func (c *GoldilocksChip) sBoxLayer(state GoldilocksState) GoldilocksState {
