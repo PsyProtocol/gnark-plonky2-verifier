@@ -297,8 +297,9 @@ func (f *Chip) finalPolyEval(finalPoly variables.PolynomialCoeffs, point gl.Quad
 	return ret
 }
 
-// finalPolyEvalGrouped evaluates pairs of canonical coefficients at a base
-// field point, reducing acc*x² + odd*x + even only once per coefficient pair.
+// finalPolyEvalGrouped evaluates groups of four canonical coefficients at a
+// base field point, reducing acc*x⁴ + c₃x³ + c₂x² + c₁x + c₀ only once per
+// coefficient group.
 func (f *Chip) finalPolyEvalGrouped(finalPoly variables.PolynomialCoeffs, point gl.Variable) gl.QuadraticExtensionVariable {
 	if len(finalPoly.Coeffs) == 0 {
 		return gl.ZeroExtension()
@@ -307,14 +308,23 @@ func (f *Chip) finalPolyEvalGrouped(finalPoly variables.PolynomialCoeffs, point 
 		panic("grouped Horner requires a host field larger than 2^144")
 	}
 	squared := f.gl.Mul(point, point)
+	cubed := f.gl.Mul(squared, point)
+	fourth := f.gl.Mul(squared, squared)
 	ret := gl.ZeroExtension()
-	for pair := (len(finalPoly.Coeffs) - 1) / 2; pair >= 0; pair-- {
+	for group := (len(finalPoly.Coeffs) - 1) / 4; group >= 0; group-- {
+		base := 4 * group
 		for j := range ret {
-			value := f.gl.MulAddNoReduce(ret[j], squared, finalPoly.Coeffs[2*pair][j])
-			if 2*pair+1 < len(finalPoly.Coeffs) {
-				value = f.gl.MulAddNoReduce(finalPoly.Coeffs[2*pair+1][j], point, value)
+			value := f.gl.MulAddNoReduce(ret[j], fourth, finalPoly.Coeffs[base][j])
+			if base+1 < len(finalPoly.Coeffs) {
+				value = f.gl.MulAddNoReduce(finalPoly.Coeffs[base+1][j], point, value)
 			}
-			// The sum is below 2p²+p, so its quotient fits in 66 bits.
+			if base+2 < len(finalPoly.Coeffs) {
+				value = f.gl.MulAddNoReduce(finalPoly.Coeffs[base+2][j], squared, value)
+			}
+			if base+3 < len(finalPoly.Coeffs) {
+				value = f.gl.MulAddNoReduce(finalPoly.Coeffs[base+3][j], cubed, value)
+			}
+			// The sum is below 4p²+p, so its quotient fits in 66 bits.
 			ret[j] = f.gl.ReduceWithBound(value, 66)
 		}
 	}

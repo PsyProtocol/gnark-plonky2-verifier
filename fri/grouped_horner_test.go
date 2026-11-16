@@ -31,7 +31,7 @@ func (c *groupedHornerCircuit) Define(api frontend.API) error {
 
 func TestGroupedHornerMatchesLegacy(t *testing.T) {
 	max := new(big.Int).Sub(gl.MODULUS, big.NewInt(1))
-	for _, length := range []int{0, 1, 2, 3, 7, 16} {
+	for _, length := range []int{0, 1, 2, 3, 4, 5, 7, 16} {
 		cs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &groupedHornerCircuit{Coeffs: make([]gl.QuadraticExtensionVariable, length)})
 		if err != nil {
 			t.Fatal(err)
