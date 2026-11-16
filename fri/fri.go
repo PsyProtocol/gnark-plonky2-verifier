@@ -434,11 +434,12 @@ func (f *Chip) computeEvaluationChecked(
 	xPoints := make([]gl.QuadraticExtensionVariable, len(evals))
 	yPoints := permutedEvals
 
-	// OPTIMIZE: Make g_F a constant
-	g_F := gl.NewVariable(g.Uint64()).ToQuadraticExtension()
+	// Coset points lie in the base field; keep the extension coefficient
+	// identically zero without introducing extension reductions.
+	gBase := gl.NewVariable(g.Uint64())
 	xPoints[0] = gl.QuadraticExtensionVariable{cosetStart, gl.Zero()}
 	for i := 1; i < len(evals); i++ {
-		xPoints[i] = f.gl.MulExtension(xPoints[i-1], g_F)
+		xPoints[i] = f.gl.Mul(xPoints[i-1][0], gBase).ToQuadraticExtension()
 	}
 
 	// For n=1 there are no differences in the product, so its weight is 1
