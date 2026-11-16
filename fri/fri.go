@@ -431,43 +431,76 @@ func (f *Chip) computeEvaluationChecked(
 	start := f.expFromBitsConstBase(gInv, revXIndexWithinCosetBits)
 	cosetStart := f.gl.Mul(start, x)
 
-	xPoints := make([]gl.QuadraticExtensionVariable, len(evals))
-	yPoints := permutedEvals
-
-	// Coset points lie in the base field; keep the extension coefficient
-	// identically zero without introducing extension reductions.
-	gBase := gl.NewVariable(g.Uint64())
-	xPoints[0] = gl.QuadraticExtensionVariable{cosetStart, gl.Zero()}
-	for i := 1; i < len(evals); i++ {
-		xPoints[i] = f.gl.Mul(xPoints[i-1][0], gBase).ToQuadraticExtension()
-	}
-
-	// For n=1 there are no differences in the product, so its weight is 1
-	// even when the coset starts at zero.
-	barycentricWeights := make([]gl.QuadraticExtensionVariable, len(xPoints))
 	if arity == 1 {
-		barycentricWeights[0] = gl.OneExtension()
-		return f.interpolateChecked(beta, xPoints, yPoints, barycentricWeights, checked)
+		return f.interpolateChecked(beta,
+			[]gl.QuadraticExtensionVariable{cosetStart.ToQuadraticExtension()},
+			permutedEvals, []gl.QuadraticExtensionVariable{gl.OneExtension()}, checked)
 	}
-	// x_i = s*g^i and weight_i = x_i/(n*s^n). Factor the shared
-	// s/(n*s^n) out of the interpolation sum and use constant g^i leaves.
-	inverseStart, hasInverse := f.gl.Inverse(cosetStart)
+	return f.foldRadix2(permutedEvals, beta, cosetStart, arityBits, checked)
+}
+
+// foldRadix2 evaluates on s*<g> by successively pairing opposite points.
+// Each level omits division by two; divide by n once at the end.
+func (f *Chip) foldRadix2(values []gl.QuadraticExtensionVariable, beta gl.QuadraticExtensionVariable, start gl.Variable, arityBits uint64, checked bool) gl.QuadraticExtensionVariable {
+	if gl.W != 7 || f.api.Compiler().FieldBitLen() < 145 {
+		panic("FRI radix-2 folding requires W=7 and a host field larger than 2^144")
+	}
+	if !checked {
+		for _, value := range values {
+			f.gl.RangeCheckQE(value)
+		}
+	}
+	f.gl.RangeCheckQE(beta)
+	inverse, hasInverse := f.gl.Inverse(start)
 	f.api.AssertIsEqual(hasInverse, 1)
-	inverseStartPow := inverseStart
-	for i := uint64(0); i < arityBits; i++ {
-		inverseStartPow = f.gl.Mul(inverseStartPow, inverseStartPow)
+	z := f.gl.ScalarMulExtension(beta, inverse)
+	for level := arityBits; level > 0; level-- {
+		root := gl.PrimitiveRootOfUnity(level)
+		inverseRoot := goldilocks.NewElement(0)
+		inverseRoot.Inverse(&root)
+		power := goldilocks.NewElement(1)
+		half := len(values) / 2
+		next := make([]gl.QuadraticExtensionVariable, half)
+		for i := 0; i < half; i++ {
+			firstBits, secondBits := uint64(67), uint64(65)
+			var difference gl.QuadraticExtensionVariable
+			if f.api.Compiler().FieldBitLen() >= 209 {
+				// Use a+p-b in [1,2p), congruent to a-b, without
+				// reducing either the difference or its constant multiple.
+				for j := range difference {
+					difference[j] = gl.NewVariable(f.api.Add(f.api.Sub(values[i][j].Limb, values[i+half][j].Limb), gl.MODULUS))
+					if i != 0 {
+						difference[j] = f.gl.MulNoReduce(difference[j], gl.NewVariable(power.Uint64()))
+					}
+				}
+				// c0 < 16p^3+2p and c1 < 4p^3+2p. Quotients
+				// fit 133/131 bits (144 after commitment alignment).
+				firstBits, secondBits = 133, 131
+				if i == 0 {
+					firstBits, secondBits = 69, 67
+				}
+			} else {
+				difference = f.gl.SubExtension(values[i], values[i+half])
+				if i != 0 {
+					difference = f.gl.ScalarMulExtension(difference, gl.NewVariable(power.Uint64()))
+				}
+			}
+			sum := f.gl.AddExtensionNoReduce(values[i], values[i+half])
+			combined := f.gl.MulAddExtensionNoReduce(difference, z, sum)
+			next[i] = gl.NewQuadraticExtensionVariable(
+				f.gl.ReduceWithBound(combined[0], firstBits),
+				f.gl.ReduceWithBound(combined[1], secondBits))
+			power.Mul(&power, &inverseRoot)
+		}
+		values = next
+		z = f.gl.MulExtension(z, z)
 	}
-	nField := goldilocks.NewElement(uint64(arity))
+	// Match the existing rejection of evaluation points on the coset.
+	f.api.AssertIsEqual(f.gl.IsZero(f.gl.SubExtension(z, gl.OneExtension())), 0)
+	n := goldilocks.NewElement(uint64(1) << arityBits)
 	nInverse := goldilocks.NewElement(0)
-	nInverse.Inverse(&nField)
-	factor := f.gl.Mul(inverseStartPow, gl.NewVariable(nInverse.Uint64()))
-	common := f.gl.Mul(cosetStart, factor)
-	root := goldilocks.NewElement(1)
-	for i := range barycentricWeights {
-		barycentricWeights[i] = gl.NewVariable(root.Uint64()).ToQuadraticExtension()
-		root.Mul(&root, &g)
-	}
-	return f.gl.ScalarMulExtension(f.interpolateChecked(beta, xPoints, yPoints, barycentricWeights, checked), common)
+	nInverse.Inverse(&n)
+	return f.gl.ScalarMulExtension(values[0], gl.NewVariable(nInverse.Uint64()))
 }
 
 func (f *Chip) verifyQueryRound(
