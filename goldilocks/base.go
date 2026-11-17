@@ -319,6 +319,20 @@ func (p *Chip) ReduceWithMaxBits(x Variable, maxNbBits uint64) Variable {
 	return remainder
 }
 
+// ReduceTo64Bits constrains x = quotient*p + remainder with a 64-bit
+// remainder, which may be noncanonical. Callers must account for that bound
+// and ensure both sides of the equality cannot wrap in the host field.
+func (p *Chip) ReduceTo64Bits(x Variable, quotientBits uint64) Variable {
+	result, err := p.api.Compiler().NewHint(ReduceHint, 2, x.Limb)
+	if err != nil {
+		panic(err)
+	}
+	p.rangeCheckerCheck(result[0], int(quotientBits))
+	p.rangeCheckerCheck(result[1], 64)
+	p.api.AssertIsEqual(x.Limb, p.api.Add(p.api.Mul(result[0], MODULUS), result[1]))
+	return NewVariable(result[1])
+}
+
 // ReduceWithBound uses a tight quotient bit bound when possible and rounds it
 // up to the range checker's limb width for the commitment-based checker.
 // Callers must ensure the wider bound is safe in the host field as well.

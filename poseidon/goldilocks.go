@@ -207,7 +207,7 @@ func (c *GoldilocksChip) sBoxMonomialWithBounds(x gl.Variable, canonical bool) g
 	}
 	x2 := c.gl.MulNoReduce(x, x)
 	x3 := c.gl.MulNoReduce(x, x2)
-	x3 = c.gl.ReduceWithMaxBits(x3, x3Bits)
+	x3 = c.gl.ReduceTo64Bits(x3, x3Bits)
 	x6 := c.gl.MulNoReduce(x3, x3)
 	x7 := c.gl.MulNoReduce(x, x6)
 	return c.gl.ReduceWithMaxBits(x7, x7Bits)
@@ -237,7 +237,7 @@ func (c *GoldilocksChip) sBoxMonomialFirstRound(x gl.Variable) gl.Variable {
 	}
 	x2 := c.gl.MulNoReduce(x, x)
 	x3 := c.gl.MulNoReduce(x, x2)
-	x3 = c.gl.ReduceWithMaxBits(x3, x3Bits)
+	x3 = c.gl.ReduceTo64Bits(x3, x3Bits)
 	x6 := c.gl.MulNoReduce(x3, x3)
 	x7 := c.gl.MulNoReduce(x, x6)
 	return c.gl.ReduceWithMaxBits(x7, x7Bits)
