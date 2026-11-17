@@ -19,7 +19,6 @@ import (
 	"math"
 	"math/big"
 	"os"
-	"strconv"
 	"sync"
 
 	"github.com/consensys/gnark-crypto/field/goldilocks"
@@ -488,16 +487,11 @@ func (p *Chip) checkCollected(api frontend.API) error {
 		panic("checkCollected should only be called when using the commit range checker")
 	}
 
-	nbBits := getOptimalBasewidth(p.api, p.rangeCheckCollected)
-	if nbBits != EXPECTED_OPTIMAL_BASEWIDTH {
-		panic("nbBits should be " + strconv.Itoa(EXPECTED_OPTIMAL_BASEWIDTH))
-	}
-
+	// The gnark commit range checker soundly handles widths that are not
+	// multiples of its base width (it additionally checks the shifted most
+	// significant limb, the fix for GHSA-rjjm-x32p-m3f7), so collected
+	// values are forwarded as-is and it picks the optimal base width itself.
 	for _, v := range p.rangeCheckCollected {
-		if v.bits%nbBits != 0 {
-			panic("v.bits is not nbBits aligned")
-		}
-
 		p.rangeChecker.Check(v.v, v.bits)
 	}
 
