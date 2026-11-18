@@ -88,6 +88,35 @@ func GenerateGroth16ProofFromJson(common_circuit_data_json *C.char, proof_with_p
 	return newGroth16ProofWithVK(proofStr, vkStr)
 }
 
+//export GenerateGroth16ProofFromPhase1
+func GenerateGroth16ProofFromPhase1(common, proof, verifier, keystore, phase1 *C.char) *C.Groth16ProofWithVK {
+	var proofStr, vkStr string
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				proofStr = fmt.Sprintf("error: %v", r)
+				vkStr = ""
+			}
+		}()
+		proofStr, vkStr = worker.GenerateProofFromPhase1(C.GoString(common), C.GoString(proof), C.GoString(verifier), C.GoString(keystore), C.GoString(phase1))
+	}()
+	return newGroth16ProofWithVK(proofStr, vkStr)
+}
+
+//export SetupGroth16
+func SetupGroth16(common, proof, verifier, keystore *C.char) (result *C.char) {
+	defer func() { if r := recover(); r != nil { result = C.CString(fmt.Sprintf("error: %v", r)) } }()
+	if err := worker.SetupJSON(C.GoString(common), C.GoString(proof), C.GoString(verifier), C.GoString(keystore)); err != nil { return C.CString(fmt.Sprintf("error: %v", err)) }
+	return C.CString("")
+}
+
+//export SetupGroth16FromPhase1
+func SetupGroth16FromPhase1(common, proof, verifier, keystore, phase1 *C.char) (result *C.char) {
+	defer func() { if r := recover(); r != nil { result = C.CString(fmt.Sprintf("error: %v", r)) } }()
+	if err := worker.SetupFromPhase1JSON(C.GoString(common), C.GoString(proof), C.GoString(verifier), C.GoString(keystore), C.GoString(phase1)); err != nil { return C.CString(fmt.Sprintf("error: %v", err)) }
+	return C.CString("")
+}
+
 //export VerifyGroth16Proof
 func VerifyGroth16Proof(proofString *C.char, vkString *C.char) *C.char {
 	return C.CString(worker.VerifyProof(C.GoString(proofString), C.GoString(vkString)))

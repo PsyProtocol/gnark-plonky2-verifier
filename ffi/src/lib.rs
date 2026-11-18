@@ -84,6 +84,44 @@ pub fn generate_groth16_proof(
     }
 }
 
+/// Generate a Groth16 proof and keys using a BN254 Phase1 file in a fresh keystore.
+pub fn generate_groth16_proof_from_phase1(
+    common: &str, proof: &str, verifier: &str, keystore: &str, phase1: &str,
+) -> (String, String) {
+    let common = CString::new(common).unwrap();
+    let proof = CString::new(proof).unwrap();
+    let verifier = CString::new(verifier).unwrap();
+    let keystore = CString::new(keystore).unwrap();
+    let phase1 = CString::new(phase1).unwrap();
+    unsafe {
+        OwnedCProof(bindings::GenerateGroth16ProofFromPhase1(
+            common.as_ptr().cast_mut(), proof.as_ptr().cast_mut(), verifier.as_ptr().cast_mut(),
+            keystore.as_ptr().cast_mut(), phase1.as_ptr().cast_mut(),
+        )).into_strings()
+    }
+}
+
+/// Set up Groth16 using a wrapped proof as the circuit shape.
+pub fn setup_groth16(common: &str, proof: &str, verifier: &str, keystore: &str) -> Result<(), String> {
+    let common = CString::new(common).map_err(|e| e.to_string())?;
+    let proof = CString::new(proof).map_err(|e| e.to_string())?;
+    let verifier = CString::new(verifier).map_err(|e| e.to_string())?;
+    let keystore = CString::new(keystore).map_err(|e| e.to_string())?;
+    let result = unsafe { OwnedCString(bindings::SetupGroth16(common.as_ptr().cast_mut(), proof.as_ptr().cast_mut(), verifier.as_ptr().cast_mut(), keystore.as_ptr().cast_mut())).into_string() };
+    if result.is_empty() { Ok(()) } else { Err(result) }
+}
+
+/// Set up Groth16 using a wrapped proof as the circuit shape and a Phase1 file.
+pub fn setup_groth16_from_phase1(common: &str, proof: &str, verifier: &str, keystore: &str, phase1: &str) -> Result<(), String> {
+    let common = CString::new(common).map_err(|e| e.to_string())?;
+    let proof = CString::new(proof).map_err(|e| e.to_string())?;
+    let verifier = CString::new(verifier).map_err(|e| e.to_string())?;
+    let keystore = CString::new(keystore).map_err(|e| e.to_string())?;
+    let phase1 = CString::new(phase1).map_err(|e| e.to_string())?;
+    let result = unsafe { OwnedCString(bindings::SetupGroth16FromPhase1(common.as_ptr().cast_mut(), proof.as_ptr().cast_mut(), verifier.as_ptr().cast_mut(), keystore.as_ptr().cast_mut(), phase1.as_ptr().cast_mut())).into_string() };
+    if result.is_empty() { Ok(()) } else { Err(result) }
+}
+
 /// JSON-aware version: accepts JSON strings directly without needing plonky2 Rust types.
 /// This avoids serde on plonky2 types and goes straight through the Go FFI.
 pub fn generate_groth16_proof_from_json(

@@ -154,6 +154,42 @@ func initKeyStorePath(keystore_path string) {
 }
 
 func GenerateProof(common_circuit_data string, proof_with_public_inputs string, verifier_only_circuit_data string, keystore_path string) (string, string) {
+	return generateProof(common_circuit_data, proof_with_public_inputs, verifier_only_circuit_data, keystore_path, "")
+}
+
+// SetupJSON uses the supplied proof only to construct the circuit shape.
+func SetupJSON(common string, proof string, verifierData string, keystorePath string) error {
+	return setupJSON(common, proof, verifierData, keystorePath, "")
+}
+
+// SetupFromPhase1JSON uses the supplied proof only to construct the circuit shape.
+func SetupFromPhase1JSON(common string, proof string, verifierData string, keystorePath string, phase1Path string) error {
+	if phase1Path == "" { return fmt.Errorf("Phase1 path is required") }
+	return setupJSON(common, proof, verifierData, keystorePath, phase1Path)
+}
+
+func setupJSON(common string, proof string, verifierData string, keystorePath string, phase1Path string) error {
+	raw := types.ReadProofWithPublicInputsRaw(proof)
+	if len(raw.PublicInputs) == 0 || len(raw.PublicInputs)%64 != 0 { return fmt.Errorf("invalid original public inputs") }
+	proofWithInputs := variables.DeserializeProofWithPublicInputs(raw)
+	circuit := CRVerifierCircuit{
+		PublicInputs: make([]frontend.Variable, 2),
+		Proof: proofWithInputs.Proof,
+		OriginalPublicInputs: proofWithInputs.PublicInputs,
+		VerifierOnlyCircuitData: variables.DeserializeVerifierOnlyCircuitData(types.ReadVerifierOnlyCircuitDataRaw(verifierData)),
+		CommonCircuitData: types.ReadCommonCircuitDataRaw(common),
+	}
+	if err := os.MkdirAll(keystorePath, 0755); err != nil { return err }
+	_, _, _, err := setup(&circuit, keystorePath, phase1Path)
+	return err
+}
+
+func GenerateProofFromPhase1(common_circuit_data string, proof_with_public_inputs string, verifier_only_circuit_data string, keystore_path string, phase1Path string) (string, string) {
+	if phase1Path == "" { panic("Phase1 path is required") }
+	return generateProof(common_circuit_data, proof_with_public_inputs, verifier_only_circuit_data, keystore_path, phase1Path)
+}
+
+func generateProof(common_circuit_data string, proof_with_public_inputs string, verifier_only_circuit_data string, keystore_path string, phase1Path string) (string, string) {
 	initKeyStorePath(keystore_path)
 
 	commonCircuitData := types.ReadCommonCircuitDataRaw(common_circuit_data)
@@ -217,7 +253,7 @@ func GenerateProof(common_circuit_data string, proof_with_public_inputs string, 
 	fmt.Printf("[prove] NewWitness took %s\n", time.Since(t))
 
 	t = time.Now()
-	cs, pk, vk, err := Setup(&circuit, keystore_path)
+	cs, pk, vk, err := setup(&circuit, keystore_path, phase1Path)
 	if err != nil {
 		panic(err)
 	}
@@ -361,7 +397,17 @@ func VerifyProof(proofString string, vkString string) string {
 }
 
 func Setup(circuit *CRVerifierCircuit, keystore_path string) (*constraint.ConstraintSystem, *groth16_bn254.ProvingKey, *groth16_bn254.VerifyingKey, error) {
+	return setup(circuit, keystore_path, "")
+}
+
+func setup(circuit *CRVerifierCircuit, keystore_path string, phase1Path string) (*constraint.ConstraintSystem, *groth16_bn254.ProvingKey, *groth16_bn254.VerifyingKey, error) {
 	prepCircuitsMu.Lock()
+	if phase1Path != "" {
+		if _, ok := prepCircuits[keystore_path]; ok { prepCircuitsMu.Unlock(); return nil, nil, nil, fmt.Errorf("Phase1 setup requires a fresh keystore path") }
+		for _, name := range []string{CIRCUIT_PATH, PK_PATH, VK_PATH} {
+			if _, err := os.Stat(filepath.Join(keystore_path, name)); err == nil { prepCircuitsMu.Unlock(); return nil, nil, nil, fmt.Errorf("Phase1 setup requires a fresh keystore path: %s exists", name) } else if !os.IsNotExist(err) { prepCircuitsMu.Unlock(); return nil, nil, nil, err }
+		}
+	}
 	if c, ok := prepCircuits[keystore_path]; ok && c.CCS != nil && c.PKey != nil && c.VKey != nil {
 		defer prepCircuitsMu.Unlock()
 		return c.CCS, c.PKey, c.VKey, nil
@@ -411,7 +457,13 @@ func Setup(circuit *CRVerifierCircuit, keystore_path string) (*constraint.Constr
 		fmt.Printf("[setup] Compile took %s, constraints: %d\n", time.Since(t), ccs.GetNbConstraints())
 
 		t = time.Now()
-		pk, vk, err := groth16.Setup(ccs)
+		var pk groth16.ProvingKey
+		var vk groth16.VerifyingKey
+		if phase1Path != "" {
+			pk, vk, err = SetupFromPtau(ccs.(*csbn254.R1CS), phase1Path)
+		} else {
+			pk, vk, err = groth16.Setup(ccs)
+		}
 		if err != nil {
 			return nil, nil, nil, err
 		}
